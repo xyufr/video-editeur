@@ -21,7 +21,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     private var playbackKeyMonitor: Any?
     private var blankClickMonitor: Any?
     private var deselectedCueIDs: Set<UUID>?
-    deinit { thumbnailJob?.cancel(); if let deleteKeyMonitor { NSEvent.removeMonitor(deleteKeyMonitor) }; if let playbackKeyMonitor { NSEvent.removeMonitor(playbackKeyMonitor) }; if let blankClickMonitor { NSEvent.removeMonitor(blankClickMonitor) } }
+    deinit { localLibraryJob?.cancel(); thumbnailJob?.cancel(); if let deleteKeyMonitor { NSEvent.removeMonitor(deleteKeyMonitor) }; if let playbackKeyMonitor { NSEvent.removeMonitor(playbackKeyMonitor) }; if let blankClickMonitor { NSEvent.removeMonitor(blankClickMonitor) } }
     var generation: GenerationJob?
     var retryDirectory: URL?
     var subtitleFileRetryDirectory: URL?
@@ -30,7 +30,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     var busy=false
     var autosave: DispatchWorkItem?
     let root=LayoutView(), header=NSView(), left=NSView(), center=DropView(), right=NSView(), bottom=NSView()
-    let preview=AVPlayerView(), overlay=PreviewOverlay(), table=SubtitleTableView(), tableScroll=NSScrollView()
+    let preview=AVPlayerView(), overlay=PreviewOverlay(), table=SubtitleTableView(), tableScroll=AutoHidingScrollView()
     let panelDivider=PanelDivider(), leftDivider=PanelDivider(), rightDivider=PanelDivider()
     var mediaPanelWidth: CGFloat=CGFloat(max(250,UserDefaults.standard.double(forKey:"editor.mediaWidth")))
     var propertyPanelWidth: CGFloat=CGFloat(max(300,UserDefaults.standard.object(forKey:"editor.propertyWidth") == nil ? 300 : UserDefaults.standard.double(forKey:"editor.propertyWidth")))
@@ -39,7 +39,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         return saved.isFinite && saved >= 140 ? CGFloat(saved) : 260
     }()
     let textTrackChoice=NSPopUpButton()
-    let timeline=TimelineView(), timelineScroll=NSScrollView()
+    let timeline=TimelineView(), timelineScroll=AutoHidingScrollView()
     let titleLabel=label(L("字幕工坊"),size:18,bold:true), subtitleLabel=label(L("多语言字幕 · 本地视频工作台"),size:10,color:muted)
     let fileLabel=label(L("尚未导入视频"),size:12,bold:true), statusLabel=label(L("准备就绪"),size:11,color:muted)
     let timeLabel=label("00:00:00 / 00:00:00",size:11,color:accent)
@@ -51,10 +51,10 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     let progress=NSProgressIndicator(), scrub=NSSlider(), zoom=NSSlider()
     var importButton: ActionButton!, generateButton: ActionButton!, exportButton: ActionButton!, cancelButton: ActionButton!, playButton: ActionButton!
     let displayMode=NSSegmentedControl(labels:[L("法语"),L("中文")],trackingMode:.selectAny,target:nil,action:nil)
-    let languageChoice=NSSegmentedControl(labels:[L("素材"),L("字幕")],trackingMode:.selectOne,target:nil,action:nil)
+    let languageChoice=NSSegmentedControl(labels:[L("素材"),L("字幕"),L("本地素材库")],trackingMode:.selectOne,target:nil,action:nil)
     let panelToggles=NSSegmentedControl(labels:[L("素材"), L("时间轴"), L("字幕属性")],trackingMode:.selectAny,target:nil,action:nil)
     private let panelKeys=["editor.showMedia", "editor.showTimeline", "editor.showInspector"]
-    let inspectorScroll=NSScrollView(), inspector=NSStackView()
+    let inspectorScroll=AutoHidingScrollView(), inspector=NSStackView()
     let alignmentChoice=NSSegmentedControl(labels:[L("左"), L("中"), L("右")],trackingMode:.selectOne,target:nil,action:nil)
     let textEditor=NSTextView(), fontChoice=NSPopUpButton(), startField=NSTextField(), endField=NSTextField(), sizeField=NSTextField(), widthField=NSTextField(), outlineField=NSTextField(), xField=NSTextField(), yField=NSTextField()
     let textColor=NSColorWell(), outlineColor=NSColorWell(), backgroundColor=NSColorWell(), backgroundEnabled=NSButton(checkboxWithTitle:L("显示背景"),target:nil,action:nil)
@@ -76,6 +76,12 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
             !isMedia && (trackID != nil ? cue.trackID == trackID : cue.trackID == nil && cue.language == language)
         }
     }
+    var localLibraryEntries: [LocalVideoEntry]=[]
+    var localLibraryJob: LocalVideoScan?
+    var localLibraryMessage=""
+    var selectedLocalVideo: URL?
+    var showsLocalLibrary: Bool { languageChoice.selectedSegment == 2 }
+    var showsGrid: Bool { showsMedia || showsLocalLibrary }
     var showsMedia: Bool { languageChoice.selectedSegment == 0 }
     var libraryEntries: [LibraryEntry] {
         if showsMedia {
@@ -90,7 +96,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         return entries
     }
     func syncLibrarySelection() {
-        guard !showsMedia else { return }
+        guard !showsGrid else { return }
         let cue=project.cues.first{$0.id == selected}
         let index=cue.flatMap { cue in libraryEntries.firstIndex{$0.contains(cue)} }
         setTableSelection(index.map{IndexSet(integer:$0)} ?? [])
@@ -120,7 +126,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         header.addSubview(panelToggles)
         let mediaTitle=label(L("素材 / 字幕"),size:13,bold:true); mediaTitle.frame=NSRect(x:16,y:0,width:220,height:22); mediaTitle.identifier=NSUserInterfaceItemIdentifier("mediaTitle"); left.addSubview(mediaTitle)
         left.addSubview(fileLabel)
-        mediaImportButton=ActionButton("",symbol:"plus",action:{[weak self] in self?.appendVideos()})
+        mediaImportButton=ActionButton("",symbol:"plus",action:{[weak self] in if let self { if self.showsLocalLibrary { self.chooseLocalLibraryDirectory() } else { self.appendVideos() } }})
         mediaImportButton.imagePosition = .imageOnly
         mediaImportButton.toolTip=L("导入")
         mediaImportButton.setAccessibilityLabel(L("导入"))
@@ -229,6 +235,8 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         let deleteTrack=ActionButton(L("删除轨道"),symbol:"trash",action:{[weak self] in self?.deleteTextTrack()}); deleteTrack.identifier=NSUserInterfaceItemIdentifier("deleteTrack"); deleteTrack.toolTip=L("删除所选文字轨道及全部文字片段（⌘Z 可撤销）"); bottom.addSubview(deleteTrack)
         textTrackChoice.setAccessibilityLabel(L("目标文字轨道")); bottom.addSubview(textTrackChoice)
         timelineScroll.hasVerticalScroller=true
+        timelineScroll.scrollerStyle = .overlay
+        timelineScroll.autohidesScrollers=true
         zoom.minValue=5; zoom.maxValue=150; zoom.doubleValue=65; zoom.target=self; zoom.action=#selector(zoomChanged); bottom.addSubview(zoom)
         setupMusicControls()
         timelineScroll.documentView=timeline; timelineScroll.hasHorizontalScroller=true; timelineScroll.hasVerticalScroller=true; timelineScroll.drawsBackground=false; bottom.addSubview(timelineScroll)
@@ -295,7 +303,8 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         }
         NSColorPanel.shared.showsAlpha=true
         // Every launch starts with the fresh Project initialized by this controller.
-        refresh(); refreshInspector()
+        languageChoice.selectedSegment=0
+        refresh(); refreshInspector(); reloadLocalLibrary()
     }
     @objc func panelsChanged(_ sender: NSSegmentedControl) {
         // Commit any field being edited before its panel is hidden.
@@ -348,15 +357,15 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         center.frame=NSRect(x:margin+leftSpace,y:y,width:w-2*margin-leftSpace-rightSpace,height:paneH)
         left.subviews.first{$0.identifier?.rawValue == "mediaTitle"}?.frame=NSRect(x:16,y:paneH-37,width:220,height:22)
         fileLabel.frame=NSRect(x:16,y:paneH-65,width:leftW-32,height:21); fileLabel.lineBreakMode = .byTruncatingMiddle
-        tableScroll.frame=NSRect(x:8,y:53,width:leftW-16,height:paneH-127)
+        tableScroll.frame=NSRect(x:8,y:showsGrid ? 53 : 85,width:leftW-16,height:paneH-(showsGrid ? 127 : 159))
         mediaImportButton.frame=NSRect(x:12,y:paneH-64,width:30,height:26)
         mediaSearch.frame=NSRect(x:48,y:paneH-64,width:leftW-60,height:26)
         tableScroll.tile()
-        if showsMedia { mediaGrid.arrange(width:tableScroll.contentSize.width,minimumHeight:tableScroll.contentSize.height) }
+        if showsGrid { mediaGrid.arrange(width:tableScroll.contentSize.width,minimumHeight:tableScroll.contentSize.height) }
         table.tableColumns.first?.width=max(1,tableScroll.contentSize.width)
-        languageChoice.frame=NSRect(x:12,y:15,width:111,height:26)
-        left.subviews.first{$0.identifier?.rawValue == "add"}?.frame=NSRect(x:126,y:13,width:77,height:30)
-        left.subviews.first{$0.identifier?.rawValue == "delete"}?.frame=NSRect(x:205,y:13,width:34,height:30)
+        languageChoice.frame=NSRect(x:12,y:15,width:leftW-24,height:26)
+        left.subviews.first{$0.identifier?.rawValue == "add"}?.frame=NSRect(x:12,y:47,width:90,height:30)
+        left.subviews.first{$0.identifier?.rawValue == "delete"}?.frame=NSRect(x:110,y:47,width:34,height:30)
         let cw=center.bounds.width
         center.subviews.first{$0.identifier?.rawValue == "previewTitle"}?.frame=NSRect(x:16,y:paneH-33,width:80,height:20)
         displayMode.frame=NSRect(x:cw-188,y:paneH-35,width:173,height:25)
@@ -391,6 +400,8 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     }
     func resizeTimeline() { timeline.frame=NSRect(x:0,y:0,width:max(timelineScroll.contentSize.width,CGFloat(project.timelineExtent)/1000*timeline.pointsPerSecond+120),height:max(timelineScroll.contentSize.height,timeline.contentHeight)); timeline.needsDisplay=true }
     func setupInspector() {
+        inspectorScroll.scrollerStyle = .overlay
+        inspectorScroll.autohidesScrollers=true
         inspector.orientation = .vertical; inspector.alignment = .leading; inspector.spacing=13; inspector.edgeInsets=NSEdgeInsets(top:0,left:0,bottom:20,right:0)
         inspectorScroll.documentView=inspector; inspectorScroll.hasVerticalScroller=true; inspectorScroll.hasHorizontalScroller=false; inspectorScroll.drawsBackground=false; right.addSubview(inspectorScroll)
         func add(_ view: NSView, height: CGFloat) { view.translatesAutoresizingMaskIntoConstraints=false; inspector.addArrangedSubview(view); view.widthAnchor.constraint(equalTo:inspector.widthAnchor).isActive=true; view.heightAnchor.constraint(equalToConstant:height).isActive=true }
@@ -408,7 +419,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
             (control as? NSTextField)?.delegate=self
         }
         add(label(L("字幕属性"),size:15,bold:true),height:24); add(selectionLabel,height:20); heading(L("文本内容"))
-        let scroll=TextEditorScrollView(); scroll.contentView=TextEditorClipView(); scroll.borderType = .bezelBorder; scroll.hasVerticalScroller=true; scroll.hasHorizontalScroller=false; scroll.documentView=textEditor
+        let scroll=TextEditorScrollView(); scroll.scrollerStyle = .overlay; scroll.autohidesScrollers=true; scroll.contentView=TextEditorClipView(); scroll.borderType = .bezelBorder; scroll.hasVerticalScroller=true; scroll.hasHorizontalScroller=false; scroll.documentView=textEditor
         textEditor.frame=NSRect(x:0,y:0,width:242,height:94); textEditor.minSize=NSSize(width:0,height:94); textEditor.maxSize=NSSize(width:CGFloat.greatestFiniteMagnitude,height:10000); textEditor.autoresizingMask=[.width]
         textEditor.isVerticallyResizable=true; textEditor.isHorizontallyResizable=false; textEditor.textContainer?.widthTracksTextView=true; textEditor.textContainerInset=NSSize(width:12,height:8); textEditor.textContainer?.lineFragmentPadding=0
         textEditor.font = .systemFont(ofSize:14); textEditor.backgroundColor=NSColor(white:0.09,alpha:1); textEditor.textColor = .white; textEditor.isRichText=false; textEditor.delegate=self; add(scroll,height:98)
@@ -472,7 +483,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     @objc func libraryChanged(_ sender: NSSegmentedControl) {
         view.window?.makeFirstResponder(nil)
         setTableSelection([])
-        refresh()
+        refresh(); root.needsLayout=true
     }
     func addLibraryItem() {
         if showsMedia { appendVideos() }
@@ -519,11 +530,12 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     }
     func refresh() {
         if let id=selectedClip,!project.allClips.contains(where:{$0.id == id}) { selectedClip=nil }
-        let document: NSView=showsMedia ? mediaGrid : table
+        let document: NSView=showsGrid ? mediaGrid : table
         if tableScroll.documentView !== document { tableScroll.documentView=document }
-        fileLabel.isHidden=showsMedia; mediaSearch.isHidden = !showsMedia; mediaImportButton.isHidden = !showsMedia
+        fileLabel.isHidden=showsGrid; mediaSearch.isHidden = !showsGrid; mediaImportButton.isHidden = !showsGrid
+        mediaImportButton.toolTip=showsLocalLibrary ? L("选择素材库目录") : L("导入")
         mediaImportButton.isEnabled = !busy; mediaSearch.isEnabled = !busy
-        left.subviews.first{$0.identifier?.rawValue == "add"}?.isHidden=showsMedia
+        left.subviews.first{$0.identifier?.rawValue == "add"}?.isHidden=showsGrid
         refreshMediaGrid()
         playbackSpeedChoice.selectItem(at:playbackSpeeds.firstIndex(of:playbackSpeed) ?? 3)
         if player.rate != 0 && abs(player.rate-playbackSpeed)>0.001 {
@@ -557,7 +569,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
             control.isEnabled = !busy
         }
         languageChoice.isEnabled = !busy
-        (left.subviews.first{$0.identifier?.rawValue == "delete"})?.isHidden=showsMedia
+        (left.subviews.first{$0.identifier?.rawValue == "delete"})?.isHidden=showsGrid
         (header.subviews.first{$0.identifier?.rawValue == "newProject"} as? NSButton)?.isEnabled = !busy
         generateButton.isEnabled = !busy && !project.videoPath.isEmpty; exportButton.isEnabled=generateButton.isEnabled; importButton.isEnabled = !busy
         scrub.isEnabled = !project.videoPath.isEmpty; scrub.maxValue=max(1,Double(project.duration))
@@ -973,7 +985,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     }
     @objc func showSettings() {
         let alert=NSAlert(); alert.messageText=L("本机工具设置"); alert.informativeText=L("复用本机 Codex 登录。转写在本机进行，字幕文本发送到 Codex 翻译；首次转写可能下载模型。")
-        let box=NSView(frame:NSRect(x:0,y:0,width:530,height:280)); let settings=ToolSettings.current
+        let box=NSView(frame:NSRect(x:0,y:0,width:530,height:365)); let settings=ToolSettings.current
         let languageTitle=label(L("界面语言"),size:12); languageTitle.frame=NSRect(x:0,y:244,width:150,height:24); box.addSubview(languageTitle)
         let language=NSPopUpButton(frame:NSRect(x:155,y:242,width:230,height:28)); language.addItems(withTitles:["中文", "English"])
         language.selectItem(at:InterfaceLanguage.preferred == .zh ? 0 : 1); box.addSubview(language)
@@ -983,8 +995,20 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
             let y=170-i*48, l=label(pair.0,size:11,color:muted); l.frame=NSRect(x:0,y:y+25,width:520,height:17); box.addSubview(l)
             let f=NSTextField(string:pair.1); f.frame=NSRect(x:0,y:y,width:525,height:24); box.addSubview(f); fields.append(f)
         }
+        for subview in box.subviews { subview.frame.origin.y += 85 }
+        var localDirectory=UserDefaults.standard.string(forKey:"editor.localLibraryDirectory")
+        let directoryLabel=label(L("本地素材库（递归扫描视频）"),size:11,color:muted)
+        directoryLabel.frame=NSRect(x:0,y:57,width:530,height:20); box.addSubview(directoryLabel)
+        let directoryField=NSTextField(labelWithString:localDirectory ?? L("未选择目录"))
+        directoryField.lineBreakMode = .byTruncatingMiddle; directoryField.frame=NSRect(x:0,y:22,width:390,height:24); box.addSubview(directoryField)
+        let choose=ActionButton(L("选择目录"),action:{
+            let panel=NSOpenPanel(); panel.canChooseDirectories=true; panel.canChooseFiles=false; panel.allowsMultipleSelection=false
+            if panel.runModal() == .OK,let url=panel.url { localDirectory=url.path; directoryField.stringValue=url.path }
+        })
+        choose.frame=NSRect(x:400,y:20,width:125,height:28); box.addSubview(choose)
         alert.accessoryView=box; alert.addButton(withTitle:L("保存并检查")); alert.addButton(withTitle:L("取消"))
         if alert.runModal() == .alertFirstButtonReturn {
+            if let localDirectory { UserDefaults.standard.set(localDirectory,forKey:"editor.localLibraryDirectory"); reloadLocalLibrary() }
             let chosen: InterfaceLanguage=language.indexOfSelectedItem == 0 ? .zh : .en
             UserDefaults.standard.set(chosen.rawValue,forKey:InterfaceLanguage.preferenceKey)
             if chosen != InterfaceLanguage.current { statusLabel.stringValue=L("语言更改将在下次启动时生效。") }

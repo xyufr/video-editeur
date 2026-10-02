@@ -7,6 +7,8 @@ let mediaClipDragType=NSPasteboard.PasteboardType("local.videoediteur.media-clip
 final class MediaCard: NSButton, NSDraggingSource {
     override var isFlipped: Bool { false }
     var thumbnail: NSImage? { didSet { needsDisplay=true } }
+    var fileURL: URL?
+    var isAdded=true
     var filename=""
     var duration=""
     var isMusic=false
@@ -26,7 +28,7 @@ final class MediaCard: NSButton, NSDraggingSource {
             }
             if hypot(point.x-origin.x,point.y-origin.y)>4,let id=identifier?.rawValue {
                 let item=NSPasteboardItem(); item.setString(id,forType:mediaClipDragType)
-                let dragging=NSDraggingItem(pasteboardWriter:item)
+                let dragging=NSDraggingItem(pasteboardWriter:fileURL.map { $0 as NSURL as NSPasteboardWriting } ?? item)
                 dragging.setDraggingFrame(bounds,contents:thumbnail ?? NSImage(systemSymbolName:"film",accessibilityDescription:nil)!)
                 beginDraggingSession(with:[dragging],event:next,source:self); return
             }
@@ -52,7 +54,7 @@ final class MediaCard: NSButton, NSDraggingSource {
             NSColor.black.withAlphaComponent(0.65).setFill(); r.fill()
             (value as NSString).draw(in:r.insetBy(dx:3,dy:1),withAttributes:attrs)
         }
-        badge(L("已添加"),right:false); badge(duration,right:true)
+        if isAdded { badge(L("已添加"),right:false) }; badge(duration,right:true)
         NSGraphicsContext.restoreGraphicsState()
         if picked {
             accent.setStroke(); let outline=NSBezierPath(roundedRect:box.insetBy(dx:1,dy:1),xRadius:5,yRadius:5); outline.lineWidth=2; outline.stroke()
@@ -121,10 +123,12 @@ extension EditorController {
         updateMediaGridSelection()
     }
     func updateMediaGridSelection() {
+        if showsLocalLibrary { for card in mediaGrid.cards { card.picked=card.fileURL == selectedLocalVideo }; return }
         for card in mediaGrid.cards { card.picked=card.identifier?.rawValue == (card.isMusic ? selectedMusic : selectedClip)?.uuidString }
     }
     func refreshMediaGrid() {
-        for card in mediaGrid.cards { card.removeFromSuperview() }
+        if showsLocalLibrary { refreshLocalLibraryGrid(); return }
+        for view in mediaGrid.subviews { view.removeFromSuperview() }
         mediaGrid.cards=[]
         let query=mediaSearch.stringValue.trimmingCharacters(in:.whitespacesAndNewlines)
         let entries=project.allClips.map { ($0.id,$0.path,$0.duration,false) } + project.music.map { ($0.id,$0.path,$0.duration,true) }

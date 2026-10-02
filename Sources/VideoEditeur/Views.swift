@@ -61,7 +61,37 @@ final class TextEditorClipView: NSClipView {
         return rect
     }
 }
-final class TextEditorScrollView: NSScrollView {
+/// Keep gutters hidden even when macOS prefers always-visible scrollers.
+class AutoHidingScrollView: NSScrollView {
+    private var hideScroller: DispatchWorkItem?
+    private var scrolling=false
+    override var scrollerStyle: NSScroller.Style {
+        get { super.scrollerStyle }
+        set { super.scrollerStyle = .overlay }
+    }
+    override func tile() {
+        super.tile()
+        verticalScroller?.alphaValue=scrolling ? 1 : 0
+        horizontalScroller?.alphaValue=scrolling ? 1 : 0
+    }
+    override func scrollWheel(with event: NSEvent) {
+        scrolling=true
+        verticalScroller?.alphaValue=1
+        horizontalScroller?.alphaValue=1
+        super.scrollWheel(with:event)
+        hideScroller?.cancel()
+        let work=DispatchWorkItem { [weak self] in
+            self?.scrolling=false
+            self?.verticalScroller?.alphaValue=0
+            self?.horizontalScroller?.alphaValue=0
+        }
+        hideScroller=work
+        DispatchQueue.main.asyncAfter(deadline:.now()+0.8,execute:work)
+    }
+    deinit { hideScroller?.cancel() }
+}
+
+final class TextEditorScrollView: AutoHidingScrollView {
     override func tile() {
         super.tile()
         guard let text=documentView as? NSTextView else { return }

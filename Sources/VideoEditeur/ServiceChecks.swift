@@ -456,3 +456,48 @@ func runSubtitleFileOutputChecks() throws {
     guard try FileManager.default.contentsOfDirectory(atPath:dir.path).count == count else { throw SubtitleError.invalid("Failed output left files") }
     print("SRT_OUTPUT_OK two files, languages, export-speed timing, collision protection, same-language pair and failed output cleanup")
 }
+
+func runLocalLibraryChecks() throws {
+    let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at:dir.appendingPathComponent("one/two"),withIntermediateDirectories:true)
+    defer { try? FileManager.default.removeItem(at:dir) }
+    for path in ["root.mp4","one/child.mov","one/two/deep.mp4","audio.mp3","notes.txt",".hidden.mp4"] { try Data().write(to:dir.appendingPathComponent(path)) }
+    try FileManager.default.createSymbolicLink(at:dir.appendingPathComponent("one/loop"),withDestinationURL:dir)
+    let scan=LocalVideoScan(),urls=try LocalVideoScan().videoURLs(in:dir)
+    guard Set(urls.map(\.lastPathComponent)) == Set(["root.mp4","child.mov","deep.mp4"]) else { throw SubtitleError.invalid("Recursive library file filtering failed") }
+    scan.cancel()
+    guard try scan.videoURLs(in:dir).isEmpty else { throw SubtitleError.invalid("Cancelled scan continued") }
+    guard try LocalVideoScan().scan(dir).isEmpty else { throw SubtitleError.invalid("Invalid videos were accepted") }
+    if let index=CommandLine.arguments.firstIndex(of:"--library-fixture"),CommandLine.arguments.count>index+1 {
+        let fixture=URL(fileURLWithPath:CommandLine.arguments[index+1])
+        let nested=dir.appendingPathComponent("one/two/real.mp4")
+        try FileManager.default.copyItem(at:fixture,to:nested)
+        let videos=try LocalVideoScan().scan(dir)
+        guard videos.count == 1,videos[0].url.standardizedFileURL.resolvingSymlinksInPath().path == nested.standardizedFileURL.resolvingSymlinksInPath().path,videos[0].duration>0,videos[0].image != nil else { throw SubtitleError.invalid("Playable video metadata/thumbnail failed: \(videos.map { "\($0.url.path):\($0.duration):\($0.image != nil)" })") }
+    }
+    let editor=EditorController(); _=editor.view
+    guard editor.showsMedia,!editor.showsLocalLibrary else { throw SubtitleError.invalid("Startup must show Media even with a configured local library") }
+    editor.localLibraryJob?.cancel()
+    editor.inspectorScroll.scrollerStyle = .legacy; editor.inspectorScroll.tile()
+    guard editor.selected == nil,editor.inspectorScroll.scrollerStyle == .overlay,
+          editor.inspectorScroll.verticalScroller?.alphaValue == 0 else { throw SubtitleError.invalid("Unselected subtitle inspector must not show a permanent scrollbar") }
+    editor.tableScroll.scrollerStyle = .legacy
+    editor.tableScroll.tile()
+    guard editor.tableScroll.scrollerStyle == .overlay,editor.tableScroll.verticalScroller?.alphaValue == 0 else { throw SubtitleError.invalid("Library scrollbar must stay hidden without a permanent gutter") }
+    guard let textScroll=editor.textEditor.enclosingScrollView else { throw SubtitleError.invalid("Missing text editor scroll view") }
+    textScroll.scrollerStyle = .legacy; textScroll.tile()
+    guard textScroll.scrollerStyle == .overlay,textScroll.verticalScroller?.alphaValue == 0,editor.textEditor.frame.minX == 0 else { throw SubtitleError.invalid("Text editor scrollbar or left edge regression") }
+    let before=editor.project
+    editor.timelineScroll.scrollerStyle = .legacy; editor.timelineScroll.tile()
+    guard editor.timelineScroll.scrollerStyle == .overlay,
+          editor.timelineScroll.verticalScroller?.alphaValue == 0,
+          editor.timelineScroll.horizontalScroller?.alphaValue == 0 else { throw SubtitleError.invalid("Timeline scrollbars must be hidden at startup without permanent gutters") }
+    editor.localLibraryEntries=[LocalVideoEntry(url:urls[0],duration:12000,image:nil)]
+    editor.languageChoice.selectedSegment=2; editor.refresh(); editor.root.needsLayout=true; editor.root.layoutSubtreeIfNeeded()
+    guard editor.languageChoice.segmentCount == 3,editor.mediaGrid.cards.count == 1,
+          editor.mediaGrid.cards[0].fileURL == urls[0],!editor.mediaGrid.cards[0].isAdded,editor.project == before,
+          editor.mediaGrid.superview != nil else { throw SubtitleError.invalid("Local library changed project or failed to display") }
+    editor.mediaSearch.stringValue="no-match"; editor.refreshMediaGrid()
+    guard editor.mediaGrid.cards.isEmpty else { throw SubtitleError.invalid("Local library search failed") }
+    print("LOCAL_LIBRARY_OK recursive folders, filtering, symlink loop, cancellation, invalid media, grid/search and unchanged project")
+}
