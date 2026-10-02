@@ -65,7 +65,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 }
 
 // CLI smoke-test hooks exercise the same renderer, exporter and generation pipeline as the app.
-if CommandLine.arguments.contains("--check-timeline-file-drop") {
+if CommandLine.arguments.contains("--check-srt-output") {
+    do { try runSubtitleFileOutputChecks(); exit(0) } catch { fputs("\(error)\n",stderr); exit(1) }
+} else if CommandLine.arguments.contains("--check-timeline-file-drop") {
     _=NSApplication.shared
     do { try runTimelineFileDropChecks(); exit(0) } catch { fputs("\(error)\n",stderr); exit(1) }
 } else if CommandLine.arguments.contains("--check-multilingual") {

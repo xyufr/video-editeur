@@ -401,3 +401,12 @@ Release 构建通过，65/65 核心检查通过；包含译文占位符一致性
 - `./scripts/build-app.sh` 构建、打包、签名成功；`git diff --check` 通过。
 - `--check-timeline-file-drop -editor.interfaceLanguage zh/en` 均 TIMELINE_FILE_DROP_OK：通过真实 NSPasteboard 临时文件检查混合文件路由、纯音乐、字幕分类、busy/lock/disabled 与无效类型/目录/不存在路径。检查用回调记录导入路由，不实际解码这些占位媒体，不写用户工程。
 - `./scripts/check-multitrack.sh` 双语通过：原有跨轨拖动、取消、轨道控制及预览/导出回归正常。未手工从 Finder 拖拽验收。
+
+## 2026-10-02 · 仅生成 SRT 与共用视频输出目录
+
+- 生成字幕弹窗增加默认关闭的「仅生成 SRT 字幕文件（不添加到视频）」。原字幕轨道及视频烧录导出流程不变；文件模式使用独立生成/重试分支，partial 不写工程，完成只输出 SRT。
+- SRT 与视频导出共用上次选择的视频输出目录；首次默认源视频目录。输出源/目标两个文件，同语言用 source/target 区分；速度换算与工程导出一致。临时目录准备完整文件，发布时不覆盖既有文件，重名成对加编号，失败清理本次已写结果。
+- `./scripts/build-app.sh`：最终构建、打包、签名成功；`git diff --check` 通过。
+- `--check-srt-output`：SRT_OUTPUT_OK，临时目录实际输出并解析两种语言的 SRT，验证时间缩放、重复输出不覆盖、同语言双文件及空结果失败清理。
+- `--check-multilingual -editor.interfaceLanguage zh/en`：均 MULTILINGUAL_OK，包含默认复选框关闭、模拟勾选、取消及原六种语言/缓存流程回归。
+- 使用离线转写/翻译替身，未运行真实模型或在线翻译，未进行完整人工生成/导出验收；未修改用户工程或媒体。

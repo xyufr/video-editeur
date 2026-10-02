@@ -24,6 +24,8 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     deinit { thumbnailJob?.cancel(); if let deleteKeyMonitor { NSEvent.removeMonitor(deleteKeyMonitor) }; if let playbackKeyMonitor { NSEvent.removeMonitor(playbackKeyMonitor) }; if let blankClickMonitor { NSEvent.removeMonitor(blankClickMonitor) } }
     var generation: GenerationJob?
     var retryDirectory: URL?
+    var subtitleFileRetryDirectory: URL?
+    var subtitleFileRetryProject: Project?
     var exporter: VideoExporter?
     var busy=false
     var autosave: DispatchWorkItem?
@@ -881,27 +883,37 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         if value && indeterminate { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
         refresh(); refreshInspector()
     }
-    func chooseGenerationLanguages() -> GenerationLanguages? {
+    struct GenerationOptions {
+        var languages: GenerationLanguages
+        var filesOnly: Bool
+    }
+    func chooseGenerationLanguages() -> GenerationOptions? {
         let alert=NSAlert(); alert.messageText=L("生成字幕")
         alert.informativeText=L("选择视频语言和目标语言；相同语言只生成转写字幕。")
-        let box=NSView(frame:NSRect(x:0,y:0,width:370,height:90))
-        let source=NSPopUpButton(frame:NSRect(x:140,y:50,width:220,height:28))
-        let target=NSPopUpButton(frame:NSRect(x:140,y:10,width:220,height:28))
+        let box=NSView(frame:NSRect(x:0,y:0,width:430,height:140))
+        let source=NSPopUpButton(frame:NSRect(x:140,y:100,width:270,height:28))
+        let target=NSPopUpButton(frame:NSRect(x:140,y:60,width:270,height:28))
         let sources: [Language]=[.fr,.en], targets: [Language]=[.zh,.en,.fr]
         source.addItems(withTitles:sources.map(\.title)); target.addItems(withTitles:targets.map(\.title))
         let defaults=project.generationLanguages ?? GenerationLanguages()
         source.selectItem(at:sources.firstIndex(of:defaults.source) ?? 0); target.selectItem(at:targets.firstIndex(of:defaults.target) ?? 0)
-        for (title,y) in [(L("视频语言"),54.0),(L("目标语言"),14.0)] {
+        for (title,y) in [(L("视频语言"),104.0),(L("目标语言"),64.0)] {
             let text=label(title,size:12); text.frame=NSRect(x:0,y:y,width:135,height:24); box.addSubview(text)
         }
+        let filesOnly=NSButton(checkboxWithTitle:L("仅生成 SRT 字幕文件（不添加到视频）"),target:nil,action:nil)
+        filesOnly.identifier=NSUserInterfaceItemIdentifier("generateSRTOnly")
+        filesOnly.state = .off; filesOnly.frame=NSRect(x:0,y:15,width:430,height:28)
+        box.addSubview(filesOnly)
         box.addSubview(source); box.addSubview(target); alert.accessoryView=box
         alert.addButton(withTitle:L("生成")); alert.addButton(withTitle:L("取消"))
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        return GenerationLanguages(source:sources[source.indexOfSelectedItem],target:targets[target.indexOfSelectedItem])
+        return GenerationOptions(languages:GenerationLanguages(source:sources[source.indexOfSelectedItem],target:targets[target.indexOfSelectedItem]),filesOnly:filesOnly.state == .on)
     }
     func generate() {
         guard !busy,!project.videoPath.isEmpty else { return }
-        guard let languages=chooseGenerationLanguages() else { return }
+        guard let options=chooseGenerationLanguages() else { return }
+        let languages=options.languages
+        if options.filesOnly { generateSubtitleFiles(languages:languages); return }
         let cachedLanguages=retryDirectory.flatMap { try? Data(contentsOf:$0.appendingPathComponent("languages.json")) }.flatMap { try? JSONDecoder().decode(GenerationLanguages.self,from:$0) } ?? GenerationLanguages()
         let retry=languages == cachedLanguages ? retryDirectory : nil
         if retry == nil && project.cues.contains(where: { $0.trackID == nil }) {
@@ -945,7 +957,9 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         guard !busy,!project.videoPath.isEmpty else { return }
         guard let color=chooseExportColor() else { return }
         let panel=NSSavePanel(); panel.allowedContentTypes=[.mpeg4Movie]; panel.nameFieldStringValue=URL(fileURLWithPath:project.videoPath).deletingPathExtension().lastPathComponent+"-subtitles.mp4"
+        panel.directoryURL=videoOutputDirectory
         guard panel.runModal() == .OK,let url=panel.url else { return }
+        UserDefaults.standard.set(url.deletingLastPathComponent().path,forKey:"editor.videoOutputDirectory")
         let snapshot=project, job=VideoExporter(); exporter=job; setBusy(true,indeterminate:false); progress.doubleValue=0; statusLabel.stringValue=L("正在导出 {0}…", [String(describing: color.title)])
         DispatchQueue.global(qos:.userInitiated).async { [weak self] in
             do {

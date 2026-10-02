@@ -379,10 +379,19 @@ func runMultilingualChecks() throws {
         }
         NSApp.stopModal(withCode:.alertFirstButtonReturn)
     }
-    guard editor.chooseGenerationLanguages() == GenerationLanguages() else { throw SubtitleError.invalid("Picker defaults failed") }
+    guard let initialOptions=editor.chooseGenerationLanguages(), initialOptions.languages == GenerationLanguages(), !initialOptions.filesOnly else { throw SubtitleError.invalid("Picker defaults failed") }
+    DispatchQueue.main.asyncAfter(deadline:.now()+0.2) {
+        func find(_ view: NSView) -> NSButton? {
+            if let button=view as? NSButton,button.identifier?.rawValue == "generateSRTOnly" { return button }
+            return view.subviews.lazy.compactMap { find($0) }.first
+        }
+        if let view=NSApp.modalWindow?.contentView { find(view)?.state = .on }
+        NSApp.stopModal(withCode:.alertFirstButtonReturn)
+    }
+    guard editor.chooseGenerationLanguages()?.filesOnly == true else { throw SubtitleError.invalid("SRT checkbox selection failed") }
     editor.project.generationLanguages=GenerationLanguages(source:.en,target:.fr)
     DispatchQueue.main.asyncAfter(deadline:.now()+0.2) { NSApp.stopModal(withCode:.alertFirstButtonReturn) }
-    guard editor.chooseGenerationLanguages() == editor.project.generationLanguages else { throw SubtitleError.invalid("Picker restoration failed") }
+    guard editor.chooseGenerationLanguages()?.languages == editor.project.generationLanguages else { throw SubtitleError.invalid("Picker restoration failed") }
     DispatchQueue.main.asyncAfter(deadline:.now()+0.2) { NSApp.stopModal(withCode:.alertSecondButtonReturn) }
     guard editor.chooseGenerationLanguages() == nil else { throw SubtitleError.invalid("Picker cancel failed") }
     editor.refresh()
@@ -423,4 +432,27 @@ func runTimelineFileDropChecks() throws {
     board.clearContents(); board.setString("https://example.com/video.mp4",forType:.string)
     guard !timeline.acceptsFileDrop(board) else { throw SubtitleError.invalid("Text URL accepted as local media") }
     print("TIMELINE_FILE_DROP_OK mixed files, audio, subtitles tab, busy/lock/disabled guards and unsupported files")
+}
+
+func runSubtitleFileOutputChecks() throws {
+    let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
+    defer { try? FileManager.default.removeItem(at:dir) }
+    var project=Project(); project.videoPath=dir.appendingPathComponent("video.mp4").path; project.duration=2000; project.playbackRate=2
+    let cues=[Cue(language:.fr,start:0,end:2000,text:"Bonjour"),Cue(language:.zh,start:0,end:2000,text:"你好")]
+    let pair=GenerationLanguages()
+    let urls=try SubtitleFileOutput.write(cues:cues,languages:pair,project:project,destination:dir)
+    guard urls.map(\.lastPathComponent) == ["video.fr.srt","video.zh.srt"],
+          try SRT.parse(String(contentsOf:urls[0]),language:.fr).first?.end == 1000,
+          try SRT.parse(String(contentsOf:urls[1]),language:.zh).first?.text == "你好" else { throw SubtitleError.invalid("SRT output timing or language failed") }
+    let saved=try Data(contentsOf:urls[0])
+    let second=try SubtitleFileOutput.write(cues:cues,languages:pair,project:project,destination:dir)
+    guard second[0] != urls[0],try Data(contentsOf:urls[0]) == saved else { throw SubtitleError.invalid("Existing SRT was overwritten") }
+    let same=try SubtitleFileOutput.write(cues:[cues[0]],languages:GenerationLanguages(source:.fr,target:.fr),project:project,destination:dir)
+    guard same.count == 2,same[0] != same[1],try Data(contentsOf:same[0]) == Data(contentsOf:same[1]) else { throw SubtitleError.invalid("Same-language pair failed") }
+    let count=try FileManager.default.contentsOfDirectory(atPath:dir.path).count
+    do { _ = try SubtitleFileOutput.write(cues:[],languages:pair,project:project,destination:dir); throw SubtitleError.invalid("Empty SRT accepted") }
+    catch { guard error.localizedDescription.contains(L("字幕文件内容不完整")) else { throw error } }
+    guard try FileManager.default.contentsOfDirectory(atPath:dir.path).count == count else { throw SubtitleError.invalid("Failed output left files") }
+    print("SRT_OUTPUT_OK two files, languages, export-speed timing, collision protection, same-language pair and failed output cleanup")
 }
