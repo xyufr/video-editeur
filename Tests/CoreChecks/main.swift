@@ -61,6 +61,12 @@ check("Numeric cue rejects changed digits") {
     let cue=Cue(language:.fr,start:0,end:1000,text:"2026")
     return rejects { _=try Translator.merge([Translation(id:cue.id,text:"2025")],source:[cue]) }
 }
+check("French ellipsis accepts Chinese ellipsis without allowing missing translations") {
+    let cue=Cue(language:.fr,start:200179,end:205639,text:"...")
+    let translated=try Translator.merge([Translation(id:cue.id,text:"……")],source:[cue])
+    return translated[0].text == "……" && translated[0].start == 200179 && translated[0].end == 205639
+        && rejects { _=try Translator.merge([Translation(id:cue.id,text:"？")],source:[cue]) }
+}
 check("French words cannot be replaced with punctuation") {
     return rejects { _=try Translator.merge(cues.map{Translation(id:$0.id,text:"？")},source:cues) }
 }

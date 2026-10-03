@@ -182,3 +182,5 @@ Settings includes a local library folder picker. The **Local Library** tab sits 
 The Subtitle Properties panel and Text Content editor also hide their scrollbars by default, including when no subtitle is selected. Scrollbars appear while scrolling and hide after scrolling stops; long content remains scrollable and editable.
 
 The timeline’s right and bottom scrollbars are hidden at startup and appear as overlays while scrolling, then hide after scrolling stops. Horizontal and vertical scrolling remain available.
+
+Subtitle validation accepts equivalent ellipsis-only cues (`...` → `……`); empty translations and untranslated French sentences are still rejected.

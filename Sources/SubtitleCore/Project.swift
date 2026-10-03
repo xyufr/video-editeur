@@ -216,6 +216,9 @@ public enum Translator {
         let normalized = text.precomposedStringWithCompatibilityMapping
         guard !normalized.unicodeScalars.contains(where: { CharacterSet.letters.contains($0) }) else { return nil }
         let compact = normalized.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) }
+        // NFKC expands … into three dots; Chinese …… conventionally uses two.
+        // Normalize ellipsis-only cues without relaxing checks for words or numbers.
+        if compact.count >= 3,compact.allSatisfy({ $0 == "." }) { return "..." }
         return compact.isEmpty ? nil : String(String.UnicodeScalarView(compact))
     }
     public static func merge(_ translations: [Translation], source: [Cue], target: Language = .zh) throws -> [Cue] {
