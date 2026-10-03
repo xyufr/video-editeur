@@ -457,3 +457,25 @@ Release 构建通过，65/65 核心检查通过；包含译文占位符一致性
 - 仅对纯省略号统一比较形式；仍保留空译文、未翻译词句和数字变化的检查。添加时间保留及不等价标点拒绝回归检查。
 - `./scripts/check.sh`：93 passed, 0 failed。使用实际缓存 source.json/batch-1.json 只读复验：94 passed, 0 failed，未修改任务数据或调用模型。
 - `./scripts/build-app.sh` 成功，桌面应用已更新。未重启用户当前窗口或执行真实转写/翻译、媒体导出。
+
+## 2026-10-03 · 翻译模型可选 Codex / Claude
+
+- 设置页 “Codex” 改为 “模型”，可选 Codex 或 Claude；路径输入框随选择切换，两者分别保存路径。旧设置缺少 `model` 时默认 Codex。
+- 两种模型使用同一提示词，从 Skill 目录（默认打包的 SubtitleSkill）读取 `SKILL.md` 翻译规则；Claude 以 `claude -p --output-format json --json-schema … --tools ""` 运行，stdout 单独写入文件后读取 `structured_output`，再写成与 Codex 相同的批次缓存。
+- `./scripts/check.sh`：93 通过，0 失败。`./scripts/build-app.sh` 成功。
+- `--check-multilingual` 输出 MULTILINGUAL_OK：新增假 Claude CLI 路由（stderr 噪声不影响解析）及旧设置默认 Codex；中英文设置面板截图检查布局无重叠、无截断。`--check-codex-path` 通过。
+- 未执行：真实 Claude 翻译。本会话沙箱中 `claude -p` 返回未登录，未能验证真实账号输出；需在登录 Claude Code 的本机环境中实际生成一次确认。
+
+- 桌面版实际运行 Claude 报 “claude 失败（1）” 且无原因：Claude 未登录时以退出码 1 结束，原因写在单独保存的 stdout JSON 中。已改为读取其中的 `result` 并显示（未登录时提示在终端运行 claude 并 /login）；`--check-multilingual` 新增未登录假 CLI 检查并通过。
+
+## 2026-10-03 · 时间轴有视频时常驻滚动条
+
+- 浮层滚动条会被系统自动淡出，边缘悬停方案在实际窗口中仍不可见，已撤回。改为 TimelineScrollView：时间轴无视频（含启动时）不显示滚动条；有主视频或附加视频轨道时切换为 legacy 样式，右侧和底部滚动条常驻可拖动。素材栏、属性面板、文本编辑器不变。
+- `build-app.sh` 成功；`--check-local-library` 中英文通过，断言无视频隐藏、加入视频后常驻、移除后再次隐藏；`--check-multilingual` 通过。
+- 新版已覆盖 `~/Desktop/VideoEditeur.app`（二进制与 dist 一致、签名校验通过）；覆盖时桌面版仍在运行，未关闭，需重启后生效。未在真实窗口目测。
+
+## 2026-10-03 · Claude 型号选择
+
+- 设置页 “模型” 行在选择 Claude 时显示型号菜单：默认 / Opus / Sonnet / Haiku。默认不传 `--model`，沿用 Claude 命令行当前默认模型；其他选项传 `--model opus|sonnet|haiku`。新字段 `claudeModel` 可选解码，旧设置为默认。
+- `check.sh` 93 通过；`build-app.sh` 成功；`--check-multilingual` 中英文通过，新增断言：默认不传 `--model`、选择 Sonnet 时传 `sonnet`、旧设置为默认；设置面板截图检查中英文布局无重叠。
+- 未执行：用 Opus/Sonnet/Haiku 真实翻译。

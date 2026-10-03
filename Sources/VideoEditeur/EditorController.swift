@@ -39,7 +39,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         return saved.isFinite && saved >= 140 ? CGFloat(saved) : 260
     }()
     let textTrackChoice=NSPopUpButton()
-    let timeline=TimelineView(), timelineScroll=AutoHidingScrollView()
+    let timeline=TimelineView(), timelineScroll=TimelineScrollView()
     let titleLabel=label(L("字幕工坊"),size:18,bold:true), subtitleLabel=label(L("多语言字幕 · 本地视频工作台"),size:10,color:muted)
     let fileLabel=label(L("尚未导入视频"),size:12,bold:true), statusLabel=label(L("准备就绪"),size:11,color:muted)
     let timeLabel=label("00:00:00 / 00:00:00",size:11,color:accent)
@@ -234,12 +234,10 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         let newText=ActionButton(L("添加文字"),symbol:"text.badge.plus",action:{[weak self] in self?.addTrackText()}); newText.identifier=NSUserInterfaceItemIdentifier("newText"); bottom.addSubview(newText)
         let deleteTrack=ActionButton(L("删除轨道"),symbol:"trash",action:{[weak self] in self?.deleteTextTrack()}); deleteTrack.identifier=NSUserInterfaceItemIdentifier("deleteTrack"); deleteTrack.toolTip=L("删除所选文字轨道及全部文字片段（⌘Z 可撤销）"); bottom.addSubview(deleteTrack)
         textTrackChoice.setAccessibilityLabel(L("目标文字轨道")); bottom.addSubview(textTrackChoice)
-        timelineScroll.hasVerticalScroller=true
-        timelineScroll.scrollerStyle = .overlay
-        timelineScroll.autohidesScrollers=true
+        timelineScroll.applyScrollers()
         zoom.minValue=5; zoom.maxValue=150; zoom.doubleValue=65; zoom.target=self; zoom.action=#selector(zoomChanged); bottom.addSubview(zoom)
         setupMusicControls()
-        timelineScroll.documentView=timeline; timelineScroll.hasHorizontalScroller=true; timelineScroll.hasVerticalScroller=true; timelineScroll.drawsBackground=false; bottom.addSubview(timelineScroll)
+        timelineScroll.documentView=timeline; timelineScroll.drawsBackground=false; bottom.addSubview(timelineScroll)
         timeline.select={[weak self] in self?.pauseForEditing(); self?.select($0)}; timeline.seek={[weak self] in self?.seek($0)}
         timeline.edit={[weak self] id,start,end in self?.updateCue(id) { c,_ in c.start=start; c.end=end }; self?.refreshInspector() }
         root.addSubview(statusLabel); progress.style = .bar; progress.isIndeterminate=false; progress.minValue=0; progress.maxValue=1; root.addSubview(progress); progress.isHidden=true
@@ -398,7 +396,10 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         timelineScroll.frame=NSRect(x:0,y:0,width:bottom.bounds.width,height:bottomH-44); resizeTimeline()
         statusLabel.frame=NSRect(x:17,y:6,width:w-330,height:17); progress.frame=NSRect(x:w-310,y:12,width:190,height:6); cancelButton.frame=NSRect(x:w-106,y:1,width:90,height:26)
     }
-    func resizeTimeline() { timeline.frame=NSRect(x:0,y:0,width:max(timelineScroll.contentSize.width,CGFloat(project.timelineExtent)/1000*timeline.pointsPerSecond+120),height:max(timelineScroll.contentSize.height,timeline.contentHeight)); timeline.needsDisplay=true }
+    func resizeTimeline() {
+        timelineScroll.showsScrollers = !project.clips.isEmpty || !project.layers.isEmpty
+        timeline.frame=NSRect(x:0,y:0,width:max(timelineScroll.contentSize.width,CGFloat(project.timelineExtent)/1000*timeline.pointsPerSecond+120),height:max(timelineScroll.contentSize.height,timeline.contentHeight)); timeline.needsDisplay=true
+    }
     func setupInspector() {
         inspectorScroll.scrollerStyle = .overlay
         inspectorScroll.autohidesScrollers=true
@@ -984,17 +985,35 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         }
     }
     @objc func showSettings() {
-        let alert=NSAlert(); alert.messageText=L("本机工具设置"); alert.informativeText=L("复用本机 Codex 登录。转写在本机进行，字幕文本发送到 Codex 翻译；首次转写可能下载模型。")
+        let alert=NSAlert(); alert.messageText=L("本机工具设置"); alert.informativeText=L("复用本机 Codex 或 Claude 登录。转写在本机进行，字幕文本发送到所选模型翻译，两者都使用 Skill 目录中的 SubtitleSkill；首次转写可能下载模型。")
         let box=NSView(frame:NSRect(x:0,y:0,width:530,height:365)); let settings=ToolSettings.current
         let languageTitle=label(L("界面语言"),size:12); languageTitle.frame=NSRect(x:0,y:244,width:150,height:24); box.addSubview(languageTitle)
         let language=NSPopUpButton(frame:NSRect(x:155,y:242,width:230,height:28)); language.addItems(withTitles:["中文", "English"])
         language.selectItem(at:InterfaceLanguage.preferred == .zh ? 0 : 1); box.addSubview(language)
         let languageHint=label(L("语言更改将在下次启动时生效。"),size:11,color:muted); languageHint.frame=NSRect(x:0,y:216,width:530,height:20); box.addSubview(languageHint)
         var fields: [NSTextField]=[]
-        for (i,pair) in [("ffmpeg",settings.ffmpeg),("Python",settings.python),("Codex",settings.codex),(L("Skill 目录"),settings.skill)].enumerated() {
+        for (i,pair) in [("ffmpeg",settings.ffmpeg),("Python",settings.python),(L("模型"),settings.modelPath),(L("Skill 目录"),settings.skill)].enumerated() {
             let y=170-i*48, l=label(pair.0,size:11,color:muted); l.frame=NSRect(x:0,y:y+25,width:520,height:17); box.addSubview(l)
             let f=NSTextField(string:pair.1); f.frame=NSRect(x:0,y:y,width:525,height:24); box.addSubview(f); fields.append(f)
         }
+        // One path field follows the selected model; each model keeps its own path.
+        var modelPaths: [TranslationModel:String]=[.codex:settings.codex,.claude:settings.claude], selectedModel=settings.model
+        let modelFieldIndex=2
+        let claudeModelChoice=NSPopUpButton(frame:NSRect(x:275,y:170-modelFieldIndex*48+24,width:120,height:24),pullsDown:false)
+        claudeModelChoice.addItems(withTitles:ClaudeModel.allCases.map(\.title)); claudeModelChoice.controlSize = .small
+        claudeModelChoice.setAccessibilityLabel(L("Claude 型号")); claudeModelChoice.toolTip=L("默认使用 Claude 命令行当前的默认模型")
+        claudeModelChoice.selectItem(at:ClaudeModel.allCases.firstIndex(of:settings.claudeModel) ?? 0); claudeModelChoice.isHidden = settings.model != .claude
+        box.addSubview(claudeModelChoice)
+        let modelChoice=ActionPopUp(frame:NSRect(x:405,y:170-modelFieldIndex*48+24,width:120,height:24),items:TranslationModel.allCases.map(\.title)) {}
+        modelChoice.controlSize = .small; modelChoice.setAccessibilityLabel(L("模型")); modelChoice.selectItem(at:TranslationModel.allCases.firstIndex(of:settings.model) ?? 0)
+        modelChoice.actionBlock={ [weak modelChoice] in
+            guard let modelChoice else { return }
+            modelPaths[selectedModel]=fields[modelFieldIndex].stringValue
+            selectedModel=TranslationModel.allCases[max(0,modelChoice.indexOfSelectedItem)]
+            fields[modelFieldIndex].stringValue=modelPaths[selectedModel] ?? ""
+            claudeModelChoice.isHidden = selectedModel != .claude
+        }
+        box.addSubview(modelChoice)
         for subview in box.subviews { subview.frame.origin.y += 85 }
         var localDirectory=UserDefaults.standard.string(forKey:"editor.localLibraryDirectory")
         let directoryLabel=label(L("本地素材库（递归扫描视频）"),size:11,color:muted)
@@ -1012,7 +1031,8 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
             let chosen: InterfaceLanguage=language.indexOfSelectedItem == 0 ? .zh : .en
             UserDefaults.standard.set(chosen.rawValue,forKey:InterfaceLanguage.preferenceKey)
             if chosen != InterfaceLanguage.current { statusLabel.stringValue=L("语言更改将在下次启动时生效。") }
-            var s=settings; s.ffmpeg=fields[0].stringValue; s.python=fields[1].stringValue; s.codex=fields[2].stringValue; s.skill=fields[3].stringValue; ToolSettings.current=s
+            modelPaths[selectedModel]=fields[2].stringValue
+            var s=settings; s.ffmpeg=fields[0].stringValue; s.python=fields[1].stringValue; s.model=selectedModel; s.codex=modelPaths[.codex] ?? s.codex; s.claude=modelPaths[.claude] ?? s.claude; s.claudeModel=ClaudeModel.allCases[max(0,claudeModelChoice.indexOfSelectedItem)]; s.skill=fields[3].stringValue; ToolSettings.current=s
             do { try s.validate(); statusLabel.stringValue=chosen != InterfaceLanguage.current ? L("语言更改将在下次启动时生效。") : L("工具路径检查通过") } catch { showError(error) }
         }
     }

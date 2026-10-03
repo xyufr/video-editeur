@@ -16,6 +16,13 @@ final class ActionButton: NSButton {
     }
     @objc func invoke() { actionBlock?() }
 }
+final class ActionPopUp: NSPopUpButton {
+    var actionBlock: (()->Void)?
+    convenience init(frame: NSRect, items: [String], action: @escaping ()->Void) {
+        self.init(frame:frame,pullsDown:false); addItems(withTitles:items); target=self; self.action=#selector(invoke); actionBlock=action
+    }
+    @objc func invoke() { actionBlock?() }
+}
 final class PanelDivider: NSView {
     var onResize: ((CGFloat,Bool)->Void)?
     var onReset: (()->Void)?
@@ -89,6 +96,19 @@ class AutoHidingScrollView: NSScrollView {
         DispatchQueue.main.asyncAfter(deadline:.now()+0.8,execute:work)
     }
     deinit { hideScroller?.cancel() }
+}
+
+/// Timeline scrollers stay hidden until a video is on the timeline, then remain visible on the right and bottom.
+/// Legacy style is required: AppKit fades overlay scrollers on its own.
+final class TimelineScrollView: NSScrollView {
+    var showsScrollers=false { didSet { if showsScrollers != oldValue { applyScrollers() } } }
+    func applyScrollers() {
+        scrollerStyle = showsScrollers ? .legacy : .overlay
+        scrollerKnobStyle = .light
+        autohidesScrollers = !showsScrollers
+        hasHorizontalScroller=showsScrollers; hasVerticalScroller=showsScrollers
+        tile()
+    }
 }
 
 final class TextEditorScrollView: AutoHidingScrollView {

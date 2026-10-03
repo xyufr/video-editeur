@@ -1,11 +1,41 @@
 import Foundation
 import SubtitleCore
 
+enum TranslationModel: String, Codable, CaseIterable {
+    case codex, claude
+    var title: String { self == .codex ? "Codex" : "Claude" }
+}
+
+/// Claude CLI model alias; `standard` passes no `--model`, keeping the CLI's own default.
+enum ClaudeModel: String, Codable, CaseIterable {
+    case standard="", opus, sonnet, haiku
+    var title: String { self == .standard ? L("默认") : rawValue.capitalized }
+}
+
 struct ToolSettings: Codable {
     var ffmpeg = "/opt/homebrew/bin/ffmpeg"
     var python = "/opt/homebrew/anaconda3/bin/python3"
     var codex = "/Applications/ChatGPT.app/Contents/Resources/codex"
     var skill = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/skills/video-generate-fr-zh-subtitles").path
+    var model = TranslationModel.codex
+    var claude = "/opt/homebrew/bin/claude"
+    var claudeModel = ClaudeModel.standard
+    init(ffmpeg: String? = nil, python: String? = nil, codex: String? = nil, skill: String? = nil, model: TranslationModel = .codex, claude: String? = nil, claudeModel: ClaudeModel = .standard) {
+        if let ffmpeg { self.ffmpeg=ffmpeg }; if let python { self.python=python }; if let codex { self.codex=codex }
+        if let skill { self.skill=skill }; if let claude { self.claude=claude }; self.model=model; self.claudeModel=claudeModel
+    }
+    /// Settings saved before model selection keep Codex as the translator.
+    init(from decoder: Decoder) throws {
+        let c=try decoder.container(keyedBy:CodingKeys.self); let d=Self()
+        ffmpeg=try c.decodeIfPresent(String.self,forKey:.ffmpeg) ?? d.ffmpeg
+        python=try c.decodeIfPresent(String.self,forKey:.python) ?? d.python
+        codex=try c.decodeIfPresent(String.self,forKey:.codex) ?? d.codex
+        skill=try c.decodeIfPresent(String.self,forKey:.skill) ?? d.skill
+        model=(try? c.decodeIfPresent(TranslationModel.self,forKey:.model)) ?? .codex
+        claude=try c.decodeIfPresent(String.self,forKey:.claude) ?? d.claude
+        claudeModel=(try? c.decodeIfPresent(ClaudeModel.self,forKey:.claudeModel)) ?? .standard
+    }
+    var modelPath: String { model == .codex ? codex : claude }
     static var multilingualSkill: String {
         let bundled=Bundle.main.resourceURL?.appendingPathComponent("SubtitleSkill").path
         if let bundled, FileManager.default.fileExists(atPath:bundled+"/SKILL.md") { return bundled }
@@ -16,6 +46,7 @@ struct ToolSettings: Codable {
             var settings=(UserDefaults.standard.data(forKey:"tools").flatMap { try? JSONDecoder().decode(Self.self,from:$0) }) ?? Self()
             if settings.skill == Self().skill { settings.skill=Self.multilingualSkill }
             settings.codex=Self.detectCodex(configured:settings.codex) ?? settings.codex
+            settings.claude=Self.detectExecutable(configured:settings.claude,candidates:Self.claudeCandidates) ?? settings.claude
             return settings
         }
         set { UserDefaults.standard.set(try? JSONEncoder().encode(newValue),forKey:"tools") }
@@ -23,7 +54,10 @@ struct ToolSettings: Codable {
     /// Resolve at use time so an app update can relocate the bundled CLI.
     /// Do not overwrite a custom setting or execute shell startup scripts.
     static func detectCodex(configured: String, candidates: [String]? = nil) -> String? {
-        ([configured] + (candidates ?? codexCandidates)).first { path in
+        detectExecutable(configured:configured,candidates:candidates ?? codexCandidates)
+    }
+    static func detectExecutable(configured: String, candidates: [String]) -> String? {
+        ([configured] + candidates).first { path in
             var directory: ObjCBool=false
             return FileManager.default.fileExists(atPath:path,isDirectory:&directory) && !directory.boolValue && FileManager.default.isExecutableFile(atPath:path)
         }
@@ -37,8 +71,14 @@ struct ToolSettings: Codable {
         paths += ["/opt/homebrew/bin/codex","/usr/local/bin/codex",home+"/.local/bin/codex",home+"/.npm-global/bin/codex"]
         return paths
     }
+    static var claudeCandidates: [String] {
+        let home=FileManager.default.homeDirectoryForCurrentUser.path
+        var paths=(ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator:":").map(String.init).filter { $0.hasPrefix("/") }.map { $0+"/claude" }
+        paths += ["/opt/homebrew/bin/claude","/usr/local/bin/claude",home+"/.local/bin/claude",home+"/.claude/local/claude",home+"/.npm-global/bin/claude"]
+        return paths
+    }
     func validate() throws {
-        for (name,path) in [("ffmpeg",ffmpeg),("Python",python),("Codex",codex)] {
+        for (name,path) in [("ffmpeg",ffmpeg),("Python",python),(model.title,modelPath)] {
             guard FileManager.default.isExecutableFile(atPath:path) else { throw SubtitleError.invalid(L("找不到 {0}：{1}\n请在设置中修正路径", [String(describing: name), String(describing: path)])) }
         }
         for file in ["SKILL.md","scripts/transcribe_srt.py"] {
@@ -61,13 +101,17 @@ final class CommandRunner {
         if let process,process.isRunning { process.terminate() }
     }
     /// Logs go to disk so verbose tools cannot fill pipe buffers and deadlock.
-    func run(_ executable: String, _ args: [String], directory: URL, stdin: String? = nil, timeout: TimeInterval = 7200) throws -> String {
+    /// `stdoutFile` keeps machine-readable stdout apart from diagnostic stderr.
+    func run(_ executable: String, _ args: [String], directory: URL, stdin: String? = nil, stdoutFile: URL? = nil, timeout: TimeInterval = 7200) throws -> String {
         guard !isCancelled else { throw SubtitleError.invalid(L("任务已取消")) }
         let log=directory.appendingPathComponent("command-\(UUID().uuidString).log")
         FileManager.default.createFile(atPath:log.path,contents:nil)
         let handle=try FileHandle(forWritingTo:log); defer { try? handle.close() }
         let p=Process(); p.executableURL=URL(fileURLWithPath:executable); p.arguments=args; p.currentDirectoryURL=directory
-        p.standardOutput=handle; p.standardError=handle
+        var stdoutHandle: FileHandle?
+        if let stdoutFile { FileManager.default.createFile(atPath:stdoutFile.path,contents:nil); stdoutHandle=try FileHandle(forWritingTo:stdoutFile) }
+        defer { try? stdoutHandle?.close() }
+        p.standardOutput=stdoutHandle ?? handle; p.standardError=handle
         var env=ProcessInfo.processInfo.environment
         env["PATH"]="/opt/homebrew/bin:/opt/homebrew/anaconda3/bin:/usr/local/bin:/usr/bin:/bin:"+(env["PATH"] ?? "")
         p.environment=env
@@ -142,7 +186,7 @@ final class GenerationJob {
         }
         var all=source; partial(all)
         if languages.source == languages.target { var check=Project(); check.duration=duration; check.cues=all; try check.validate(); return all }
-        let instructions=try String(contentsOfFile:ToolSettings.multilingualSkill+"/SKILL.md",encoding:.utf8)
+        let instructions=try String(contentsOfFile:tools.skill+"/SKILL.md",encoding:.utf8)
         let schema=directory.appendingPathComponent("translation.schema.json")
         let schemaText=#"{"type":"object","properties":{"translations":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"text":{"type":"string"}},"required":["id","text"],"additionalProperties":false}}},"required":["translations"],"additionalProperties":false}"#
         try schemaText.write(to:schema,atomically:true,encoding:.utf8)
@@ -167,7 +211,7 @@ final class GenerationJob {
                 for attempt in 0..<2 {
                     do {
                         if attempt > 0 { status(L("{0}翻译 · 重试第 {1} 批", [languages.target.title, String(index+1)])) }
-                        _ = try runner.run(tools.codex,["exec","--skip-git-repo-check","--ephemeral","--sandbox","read-only","--color","never","--output-schema",schema.path,"-o",output.path,"-"],directory:directory,stdin:prompt,timeout:600)
+                        try translate(prompt:prompt,schema:schemaText,schemaFile:schema,output:output)
                         let response=try JSONDecoder().decode(TranslationBatch.self,from:Data(contentsOf:output))
                         translated=try Translator.merge(response.translations,source:batch,target:languages.target); break
                     } catch { lastError=error; if runner.isCancelled { throw error } }
@@ -180,5 +224,30 @@ final class GenerationJob {
         status(L("校验双语字幕"))
         var check=Project(); check.duration=duration; check.cues=all; try check.validate()
         return all
+    }
+    /// Both models read the same skill-based prompt and leave `{"translations":[...]}` at `output`.
+    private func translate(prompt: String, schema: String, schemaFile: URL, output: URL) throws {
+        switch tools.model {
+        case .codex:
+            _ = try runner.run(tools.codex,["exec","--skip-git-repo-check","--ephemeral","--sandbox","read-only","--color","never","--output-schema",schemaFile.path,"-o",output.path,"-"],directory:directory,stdin:prompt,timeout:600)
+        case .claude:
+            let raw=directory.appendingPathComponent(output.deletingPathExtension().lastPathComponent+".claude.json")
+            // Claude exits non-zero on account errors and reports the reason in its stdout JSON.
+            var runError: Error?
+            var args=["-p","--output-format","json","--json-schema",schema,"--tools","","--strict-mcp-config","--no-session-persistence"]
+            if tools.claudeModel != .standard { args += ["--model",tools.claudeModel.rawValue] }
+            do { _ = try runner.run(tools.claude,args,directory:directory,stdin:prompt,stdoutFile:raw,timeout:600) }
+            catch { if runner.isCancelled { throw error }; runError=error }
+            let result=(try? Data(contentsOf:raw)).flatMap { try? JSONSerialization.jsonObject(with:$0) as? [String:Any] }
+            if runError != nil || result?["is_error"] as? Bool == true {
+                guard let message=result?["result"] as? String, !message.isEmpty else { throw runError ?? SubtitleError.invalid(L("翻译失败，请重试")) }
+                let hint=message.localizedCaseInsensitiveContains("login") ? "\n"+L("请在终端运行 claude 并使用 /login 登录后重试。") : ""
+                throw SubtitleError.invalid(L("Claude 翻译失败：{0}{1}\n日志：{2}", [message, hint, raw.path]))
+            }
+            var structured=result?["structured_output"]
+            if structured == nil, let text=result?["result"] as? String { structured=try? JSONSerialization.jsonObject(with:Data(text.utf8)) }
+            guard let structured, JSONSerialization.isValidJSONObject(structured) else { throw SubtitleError.invalid(L("翻译失败，请重试")) }
+            try JSONSerialization.data(withJSONObject:structured).write(to:output,options:.atomic)
+        }
     }
 }

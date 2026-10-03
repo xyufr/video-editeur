@@ -371,6 +371,36 @@ func runMultilingualChecks() throws {
             catch { guard error.localizedDescription.contains(L("任务语言不匹配，请重新生成")) else { throw error } }
         }
     }
+    let claude=dir.appendingPathComponent("claude")
+    let claudeTranslator=#"""
+    #!/usr/bin/python3
+    import json,sys
+    from pathlib import Path
+    assert '--json-schema' in sys.argv and '-p' in sys.argv
+    prompt=sys.stdin.read()
+    data=json.loads(prompt.split('BEGIN_SUBTITLE_DATA\n')[1].split('\nEND_SUBTITLE_DATA')[0])
+    sys.stderr.write('diagnostic noise\n')
+    Path('model.txt').write_text(sys.argv[sys.argv.index('--model')+1] if '--model' in sys.argv else '')
+    print(json.dumps({'type':'result','is_error':False,'structured_output':{'translations':[{'id':x['id'],'text':'你好'} for x in data]}}))
+    """#
+    try claudeTranslator.write(to:claude,atomically:true,encoding:.utf8)
+    try FileManager.default.setAttributes([.posixPermissions:0o755],ofItemAtPath:claude.path)
+    let claudeTools=ToolSettings(ffmpeg:"/usr/bin/true",python:"/usr/bin/python3",codex:"/missing/codex",skill:skill.path,model:.claude,claude:claude.path)
+    let claudeCues=try GenerationJob(directory:dir.appendingPathComponent("claude-job"),tools:claudeTools).run(video:dir.appendingPathComponent("fixture.mp4"),duration:2000,status:{_ in},partial:{_ in})
+    guard claudeCues.last?.language == .zh, claudeCues.last?.text == "你好" else { throw SubtitleError.invalid("Claude translation routing failed") }
+    guard try String(contentsOf:dir.appendingPathComponent("claude-job/model.txt"),encoding:.utf8).isEmpty else { throw SubtitleError.invalid("Default Claude model must not pass --model") }
+    var sonnetTools=claudeTools; sonnetTools.claudeModel = .sonnet
+    _ = try GenerationJob(directory:dir.appendingPathComponent("claude-sonnet-job"),tools:sonnetTools).run(video:dir.appendingPathComponent("fixture.mp4"),duration:2000,status:{_ in},partial:{_ in})
+    guard try String(contentsOf:dir.appendingPathComponent("claude-sonnet-job/model.txt"),encoding:.utf8) == "sonnet" else { throw SubtitleError.invalid("Claude model choice was not passed") }
+    let loggedOut=dir.appendingPathComponent("claude-logged-out")
+    try "#!/bin/sh\ncat >/dev/null\necho '{\"type\":\"result\",\"is_error\":true,\"result\":\"Not logged in · Please run /login\"}'\nexit 1\n".write(to:loggedOut,atomically:true,encoding:.utf8)
+    try FileManager.default.setAttributes([.posixPermissions:0o755],ofItemAtPath:loggedOut.path)
+    do {
+        _ = try GenerationJob(directory:dir.appendingPathComponent("claude-logged-out-job"),tools:ToolSettings(ffmpeg:"/usr/bin/true",python:"/usr/bin/python3",skill:skill.path,model:.claude,claude:loggedOut.path)).run(video:dir.appendingPathComponent("fixture.mp4"),duration:2000,status:{_ in},partial:{_ in})
+        throw SubtitleError.invalid("Logged-out Claude accepted")
+    } catch { guard error.localizedDescription.contains("Not logged in"), error.localizedDescription.contains("/login") else { throw error } }
+    let legacy=try JSONDecoder().decode(ToolSettings.self,from:Data(#"{"ffmpeg":"a","python":"b","codex":"c","skill":"d"}"#.utf8))
+    guard legacy.model == .codex, legacy.modelPath == "c", legacy.claudeModel == .standard else { throw SubtitleError.invalid("Legacy tool settings did not default to Codex") }
     let editor=EditorController(); _=editor.view
     DispatchQueue.main.asyncAfter(deadline:.now()+0.2) {
         if let view=NSApp.modalWindow?.contentView, let bitmap=view.bitmapImageRepForCachingDisplay(in:view.bounds) {
@@ -394,9 +424,17 @@ func runMultilingualChecks() throws {
     guard editor.chooseGenerationLanguages()?.languages == editor.project.generationLanguages else { throw SubtitleError.invalid("Picker restoration failed") }
     DispatchQueue.main.asyncAfter(deadline:.now()+0.2) { NSApp.stopModal(withCode:.alertSecondButtonReturn) }
     guard editor.chooseGenerationLanguages() == nil else { throw SubtitleError.invalid("Picker cancel failed") }
+    DispatchQueue.main.asyncAfter(deadline:.now()+0.2) {
+        if let view=NSApp.modalWindow?.contentView, let bitmap=view.bitmapImageRepForCachingDisplay(in:view.bounds) {
+            view.cacheDisplay(in:view.bounds,to:bitmap)
+            try? bitmap.representation(using:.png,properties:[:])?.write(to:URL(fileURLWithPath:"/tmp/tool-settings-\(InterfaceLanguage.current.rawValue).png"))
+        }
+        NSApp.stopModal(withCode:.alertSecondButtonReturn)
+    }
+    editor.showSettings()
     editor.refresh()
     guard editor.displayMode.label(forSegment:0) == Language.en.title, editor.displayMode.label(forSegment:1) == Language.fr.title else { throw SubtitleError.invalid("Display language controls failed") }
-    print("MULTILINGUAL_OK six pairs, same-language transcription, cache isolation, retry, picker defaults/cancel and display labels (offline fixtures)")
+    print("MULTILINGUAL_OK six pairs, Claude/Codex routing, Claude login error, legacy settings, same-language transcription, cache isolation, retry, picker defaults/cancel and display labels (offline fixtures)")
 }
 
 func runTimelineFileDropChecks() throws {
@@ -488,10 +526,12 @@ func runLocalLibraryChecks() throws {
     textScroll.scrollerStyle = .legacy; textScroll.tile()
     guard textScroll.scrollerStyle == .overlay,textScroll.verticalScroller?.alphaValue == 0,editor.textEditor.frame.minX == 0 else { throw SubtitleError.invalid("Text editor scrollbar or left edge regression") }
     let before=editor.project
-    editor.timelineScroll.scrollerStyle = .legacy; editor.timelineScroll.tile()
-    guard editor.timelineScroll.scrollerStyle == .overlay,
-          editor.timelineScroll.verticalScroller?.alphaValue == 0,
-          editor.timelineScroll.horizontalScroller?.alphaValue == 0 else { throw SubtitleError.invalid("Timeline scrollbars must be hidden at startup without permanent gutters") }
+    guard editor.project.clips.isEmpty, !editor.timelineScroll.showsScrollers, !editor.timelineScroll.hasHorizontalScroller, !editor.timelineScroll.hasVerticalScroller else { throw SubtitleError.invalid("Timeline scrollbars must be hidden while no video is on the timeline") }
+    editor.project.videoPath=urls[0].path; editor.project.duration=12000; editor.resizeTimeline()
+    guard editor.timelineScroll.showsScrollers, editor.timelineScroll.scrollerStyle == .legacy, !editor.timelineScroll.autohidesScrollers,
+          editor.timelineScroll.hasHorizontalScroller, editor.timelineScroll.hasVerticalScroller else { throw SubtitleError.invalid("Timeline scrollbars must stay visible once a video is on the timeline") }
+    editor.project=before; editor.resizeTimeline()
+    guard !editor.timelineScroll.showsScrollers else { throw SubtitleError.invalid("Timeline scrollbars must hide again without video") }
     editor.localLibraryEntries=[LocalVideoEntry(url:urls[0],duration:12000,image:nil)]
     editor.languageChoice.selectedSegment=2; editor.refresh(); editor.root.needsLayout=true; editor.root.layoutSubtreeIfNeeded()
     guard editor.languageChoice.segmentCount == 3,editor.mediaGrid.cards.count == 1,
