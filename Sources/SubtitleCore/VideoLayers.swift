@@ -53,6 +53,17 @@ extension Project {
         }
         return try replacingLayers([value]+layers)
     }
+    /// Imported videos form one new track, placed back to back from `time`.
+    public func addingLayerTrack(_ clips: [VideoClip],at time: Int64) throws -> Project {
+        guard let first=clips.first,time>=0,time<1_000_000_000 else { throw SubtitleError.invalid(L("素材或插入位置无效")) }
+        var start=time
+        let values=clips.map { source -> VideoLayer in
+            var clip=source; clip.transition=0; clip.timelineGap=nil
+            var value=VideoLayer(clip:clip,start:start); value.trackID=first.id; start+=clip.duration
+            return value
+        }
+        return try replacingLayers(values+layers)
+    }
     public func replacingLayer(_ value: VideoLayer) throws -> Project {
         guard let old=layers.first(where:{$0.id == value.id}),!old.isLocked,
               let target=layers.first(where:{$0.trackIdentifier == value.trackIdentifier}),!target.isLocked else { throw SubtitleError.invalid(L("视频轨道已锁定，请先解锁")) }

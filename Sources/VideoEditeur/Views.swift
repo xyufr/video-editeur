@@ -98,7 +98,8 @@ class AutoHidingScrollView: NSScrollView {
     deinit { hideScroller?.cancel() }
 }
 
-/// Timeline scrollers stay hidden until a video is on the timeline, then remain visible on the right and bottom.
+/// The bottom scroller stays hidden until a video is on the timeline, then remains visible.
+/// No right scroller is shown; vertical scrolling still works with the wheel/trackpad.
 /// Legacy style is required: AppKit fades overlay scrollers on its own.
 final class TimelineScrollView: NSScrollView {
     var showsScrollers=false { didSet { if showsScrollers != oldValue { applyScrollers() } } }
@@ -106,7 +107,7 @@ final class TimelineScrollView: NSScrollView {
         scrollerStyle = showsScrollers ? .legacy : .overlay
         scrollerKnobStyle = .light
         autohidesScrollers = !showsScrollers
-        hasHorizontalScroller=showsScrollers; hasVerticalScroller=showsScrollers
+        hasHorizontalScroller=showsScrollers; hasVerticalScroller=false
         tile()
     }
 }
@@ -291,15 +292,22 @@ final class PreviewOverlay: NSView {
 }
 final class TimelineView: NSView {
     var canDropFiles: (([URL])->Bool)?
-    var dropFiles: (([URL])->Bool)?
+    /// The time is set when files are dropped on the "new video track" zone.
+    var dropFiles: (([URL],Int64?)->Bool)?
     private var fileDropHighlighted=false { didSet { needsDisplay=true } }
     func acceptsFileDrop(_ pasteboard: NSPasteboard) -> Bool {
         let urls=mediaFileURLs(from:pasteboard)
         return editingEnabled && !urls.isEmpty && canDropFiles?(urls) == true
     }
-    func importFileDrop(_ pasteboard: NSPasteboard) -> Bool {
+    /// Files over the "new video track" zone go to a new track when a main video exists.
+    private func fileDropNewTrackTime(_ sender: NSDraggingInfo) -> Int64? {
+        let point=convert(sender.draggingLocation,from:nil)
+        guard !project.clips.isEmpty,point.x>=leading,point.y>=newLayerY else { return nil }
+        return max(0,Int64((point.x-leading)/pointsPerSecond*1000))
+    }
+    func importFileDrop(_ pasteboard: NSPasteboard, newTrackAt: Int64? = nil) -> Bool {
         guard acceptsFileDrop(pasteboard) else { return false }
-        return dropFiles?(mediaFileURLs(from:pasteboard)) ?? false
+        return dropFiles?(mediaFileURLs(from:pasteboard),newTrackAt) ?? false
     }
 
     var subtitleTracksRequested = false
@@ -343,6 +351,7 @@ final class TimelineView: NSView {
         if sender.draggingPasteboard.availableType(from:[mediaClipDragType]) == nil {
             dropIndex=nil; layerDropTime=nil; dropTrackID=nil
             fileDropHighlighted=acceptsFileDrop(sender.draggingPasteboard)
+            if fileDropHighlighted { layerDropTime=fileDropNewTrackTime(sender) }
             return fileDropHighlighted ? .copy : []
         }
         fileDropHighlighted=false
@@ -356,7 +365,7 @@ final class TimelineView: NSView {
     override func draggingEnded(_ sender: NSDraggingInfo) { dropIndex=nil; layerDropTime=nil; dropTrackID=nil; fileDropHighlighted=false }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         defer { dropIndex=nil; layerDropTime=nil; dropTrackID=nil; fileDropHighlighted=false }
-        if sender.draggingPasteboard.availableType(from:[mediaClipDragType]) == nil { return importFileDrop(sender.draggingPasteboard) }
+        if sender.draggingPasteboard.availableType(from:[mediaClipDragType]) == nil { return importFileDrop(sender.draggingPasteboard,newTrackAt:fileDropNewTrackTime(sender)) }
         guard let (id,index)=mediaDrop(sender) else { return false }
         if index<0 {
             let time=max(0,Int64((convert(sender.draggingLocation,from:nil).x-leading)/pointsPerSecond*1000))

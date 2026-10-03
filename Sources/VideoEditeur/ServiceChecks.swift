@@ -449,9 +449,11 @@ func runTimelineFileDropChecks() throws {
     let editor=EditorController(); _=editor.view
     let timeline=editor.timeline
     var imported:[URL]=[]
-    timeline.dropFiles={ imported=$0; return true }
+    var newTrackTime: Int64?
+    timeline.dropFiles={ imported=$0; newTrackTime=$1; return true }
     put([video,music])
-    guard timeline.registeredDraggedTypes.contains(.fileURL),timeline.acceptsFileDrop(board),timeline.importFileDrop(board),imported == [video,music] else { throw SubtitleError.invalid("Timeline mixed file drop routing failed") }
+    guard timeline.registeredDraggedTypes.contains(.fileURL),timeline.acceptsFileDrop(board),timeline.importFileDrop(board),imported == [video,music],newTrackTime == nil else { throw SubtitleError.invalid("Timeline mixed file drop routing failed") }
+    guard timeline.importFileDrop(board,newTrackAt:1500),newTrackTime == 1500 else { throw SubtitleError.invalid("New-track zone file drop lost its target") }
     editor.languageChoice.selectedSegment=1
     guard timeline.acceptsFileDrop(board) else { throw SubtitleError.invalid("Timeline must accept files with subtitles tab selected") }
     editor.busy=true
@@ -469,7 +471,21 @@ func runTimelineFileDropChecks() throws {
     }
     board.clearContents(); board.setString("https://example.com/video.mp4",forType:.string)
     guard !timeline.acceptsFileDrop(board) else { throw SubtitleError.invalid("Text URL accepted as local media") }
-    print("TIMELINE_FILE_DROP_OK mixed files, audio, subtitles tab, busy/lock/disabled guards and unsupported files")
+    var routed=""
+    if let index=CommandLine.arguments.firstIndex(of:"--drop-fixture"),CommandLine.arguments.count>index+1 {
+        // Real media: a drop on the new-track zone must create a track, not extend the main video.
+        let fixture=URL(fileURLWithPath:CommandLine.arguments[index+1])
+        let real=EditorController(); _=real.view
+        guard real.appendMedia([fixture]) else { throw SubtitleError.invalid("Fixture import failed") }
+        let main=real.project.clips
+        RunLoop.main.run(until:Date().addingTimeInterval(0.1)) // Close the run-loop undo group of the first import.
+        guard real.appendMedia([fixture],newTrackAt:500),real.project.clips == main,real.project.layerTracks.count == 1,
+              real.project.layers[0].start == 500,real.project.layers[0].clip.path == fixture.path else { throw SubtitleError.invalid("New-track zone drop appended to the main video") }
+        RunLoop.main.run(until:Date().addingTimeInterval(0.1)); real.history.undo()
+        guard real.project.clips == main,real.project.layers.isEmpty else { throw SubtitleError.invalid("New-track drop undo failed: \(real.project.clips.count) main, \(real.project.layers.count) layers") }
+        routed=", real new-track drop and undo"
+    }
+    print("TIMELINE_FILE_DROP_OK mixed files, audio, subtitles tab, busy/lock/disabled guards and unsupported files\(routed)")
 }
 
 func runSubtitleFileOutputChecks() throws {
@@ -529,7 +545,7 @@ func runLocalLibraryChecks() throws {
     guard editor.project.clips.isEmpty, !editor.timelineScroll.showsScrollers, !editor.timelineScroll.hasHorizontalScroller, !editor.timelineScroll.hasVerticalScroller else { throw SubtitleError.invalid("Timeline scrollbars must be hidden while no video is on the timeline") }
     editor.project.videoPath=urls[0].path; editor.project.duration=12000; editor.resizeTimeline()
     guard editor.timelineScroll.showsScrollers, editor.timelineScroll.scrollerStyle == .legacy, !editor.timelineScroll.autohidesScrollers,
-          editor.timelineScroll.hasHorizontalScroller, editor.timelineScroll.hasVerticalScroller else { throw SubtitleError.invalid("Timeline scrollbars must stay visible once a video is on the timeline") }
+          editor.timelineScroll.hasHorizontalScroller, !editor.timelineScroll.hasVerticalScroller else { throw SubtitleError.invalid("Timeline must show only the bottom scrollbar once a video is on the timeline") }
     editor.project=before; editor.resizeTimeline()
     guard !editor.timelineScroll.showsScrollers else { throw SubtitleError.invalid("Timeline scrollbars must hide again without video") }
     editor.localLibraryEntries=[LocalVideoEntry(url:urls[0],duration:12000,image:nil)]

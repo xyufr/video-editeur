@@ -60,7 +60,7 @@ Drag a video card from Media onto the video track to insert a copy. The insertio
 
 Video tracks render at the full canvas size, preserving aspect ratio with black bars where needed. Upper visible tracks cover lower tracks; all unmuted audio tracks are mixed. PiP sizing, positioning, preview dragging, and PiP controls have been removed. Existing PiP projects reopen as ordinary video tracks, preserving source files, timing, effects, and track states; their former position and size no longer affect playback or export.
 
-- Drag a Media card into the area below the timeline to create a new video track, or onto an existing additional track to place another clip at the drop time. Each track supports multiple clips; overlapping clips on the same track are rejected.
+- Drag a Media card, a Local Library card or video files from Finder into the area below the timeline to create a new video track (multiple files are placed back to back on that track; dropped audio is still added as music), or onto an existing additional track to place another clip at the drop time. Each track supports multiple clips; overlapping clips on the same track are rejected.
 - Drag a timeline video clip by its body onto **any other video track**, including Video 1, or into the bottom drop area to create a new track. This moves the original clip with its source range, effects, and ID. Other clips and music stay in place; cross-track moves leave subtitles at their existing times. Existing destination tracks apply their own hide/mute settings. A turquoise outline marks a valid placement; red means overlap or a locked destination. Release to commit once, ⌘Z to undo, or Esc to cancel. Drag clip edges to trim.
 - Split at the playhead with ⌘B or the split button. Both pieces stay on the same track. Delete removes only the selected clip; deleting the last clip removes the empty row.
 - Right-click an additional video track for **Move Track Up**, **Move Track Down**, or **Delete Track**. Moving a track changes the order in which videos cover one another; deleting it removes every clip in that track. Locked tracks cannot be changed. Undo restores the operation.
@@ -181,6 +181,6 @@ Settings includes a local library folder picker. The **Local Library** tab sits 
 
 The Subtitle Properties panel and Text Content editor also hide their scrollbars by default, including when no subtitle is selected. Scrollbars appear while scrolling and hide after scrolling stops; long content remains scrollable and editable.
 
-The timeline’s right and bottom scrollbars are hidden while the timeline has no video (including at launch). Once a video is on the timeline, both stay visible as standard scrollbars that can be dragged directly.
+The timeline’s bottom scrollbar is hidden while the timeline has no video (including at launch). Once a video is on the timeline, it stays visible as a standard scrollbar that can be dragged directly. The timeline has no right scrollbar; scroll vertically with the mouse wheel or trackpad.
 
 Subtitle validation accepts equivalent ellipsis-only cues (`...` → `……`); empty translations and untranslated French sentences are still rejected.

@@ -17,7 +17,8 @@ extension EditorController {
         guard panel.runModal() == .OK else { return }
         _ = appendMedia(panel.urls)
     }
-    @discardableResult func appendMedia(_ urls: [URL]) -> Bool {
+    /// `newTrackAt` places imported videos on a new video track instead of appending them to the main track.
+    @discardableResult func appendMedia(_ urls: [URL], newTrackAt: Int64? = nil) -> Bool {
         guard !busy,!urls.isEmpty else { return false }
         pauseForEditing()
         do {
@@ -31,14 +32,16 @@ extension EditorController {
                     sounds.append(BackgroundMusic(path:url.path,duration:Int64(seconds*1000)))
                 }
             }
-            var next=try videos.isEmpty ? project : project.replacingClips(project.clips+videos)
+            var next: Project
+            if let time=newTrackAt,!videos.isEmpty,!project.clips.isEmpty { next=try project.addingLayerTrack(videos,at:time) }
+            else { next=try videos.isEmpty ? project : project.replacingClips(project.clips+videos) }
             if next.videoClips == nil && next.videoPath.isEmpty { next.videoClips=[] }
             for i in sounds.indices {
                 sounds[i].start=next.duration>0 ? min(current,next.duration-1) : 0
             }
             next.backgroundMusic=project.music+sounds
             mediaSearch.stringValue=""
-            commit(next,name:L("添加素材"))
+            commit(next,name:newTrackAt != nil && !videos.isEmpty ? L("新建视频轨道") : L("添加素材"))
             if project == next { if let id=sounds.last?.id { selectMusicClip(id) } else if let id=videos.first?.id { selectVideoClip(id) } }
             return project == next
         } catch { showError(error); return false }

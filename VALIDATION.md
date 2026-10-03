@@ -479,3 +479,15 @@ Release 构建通过，65/65 核心检查通过；包含译文占位符一致性
 - 设置页 “模型” 行在选择 Claude 时显示型号菜单：默认 / Opus / Sonnet / Haiku。默认不传 `--model`，沿用 Claude 命令行当前默认模型；其他选项传 `--model opus|sonnet|haiku`。新字段 `claudeModel` 可选解码，旧设置为默认。
 - `check.sh` 93 通过；`build-app.sh` 成功；`--check-multilingual` 中英文通过，新增断言：默认不传 `--model`、选择 Sonnet 时传 `sonnet`、旧设置为默认；设置面板截图检查中英文布局无重叠。
 - 未执行：用 Opus/Sonnet/Haiku 真实翻译。
+
+## 2026-10-03 · 拖入 “新建视频轨道” 区域的文件不再追加到视频 1
+
+- 原因：本地素材库卡片与 Finder 拖入的是文件，时间轴文件拖放一律按 “添加素材” 追加到主视频，未判断落点。现在落在新建轨道区域（且已有主视频）时，在落点时间新建视频轨道，多个视频首尾相接放在同一轨道；音频仍作为音乐加入；一次撤销。无主视频时仍作为主视频导入。拖动时新建轨道区域高亮并显示落点。
+- `check.sh` 94 通过（新增 addingLayerTrack：主视频不变、单一新轨道、连续起点、清除 gap、空列表拒绝）；`build-app.sh` 成功。
+- `--check-timeline-file-drop --drop-fixture <ffmpeg 生成的 2 秒 mp4>`：真实导入后拖到新建轨道区域，主视频不变、新增 1 条轨道起点 500 ms，撤销后恢复。`check-multitrack.sh` 中英文通过；`--check-local-library`、`--check-multilingual` 通过。
+- 未执行：真实窗口中用鼠标拖放的目测。
+
+## 2026-10-03 · 隐藏时间轴右侧滚动条
+
+- 时间轴不再显示右侧（垂直）滚动条，仅在有视频时显示底部滚动条；垂直方向仍可用滚轮/触控板滚动。
+- `build-app.sh` 成功；`--check-local-library` 中英文通过（断言有视频时只有底部滚动条）。

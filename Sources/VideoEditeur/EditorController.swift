@@ -139,7 +139,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         }
         mediaGrid.dropFiles={[weak self] urls in self?.appendMedia(urls) ?? false }
         timeline.canDropFiles={[weak self] urls in self?.canImportMediaFiles(urls) ?? false }
-        timeline.dropFiles={[weak self] urls in self?.appendMedia(urls) ?? false }
+        timeline.dropFiles={[weak self] urls,newTrackAt in self?.appendMedia(urls,newTrackAt:newTrackAt) ?? false }
 
 
         table.headerView=nil; table.backgroundColor = .clear; table.rowHeight=61; table.intercellSpacing=NSSize(width:0,height:3)

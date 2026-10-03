@@ -384,6 +384,16 @@ check("PiP tracks retain absolute time and extend duration without moving main c
     let removed=try r.replacingLayers([])
     return r.duration==2500 && r.cues==p.cues && removed.duration==2000
 }
+check("Dropped files on the new-track zone form one new track without changing the main video") {
+    var p=try Project().replacingClips([VideoClip(path:"a.mp4",duration:2000)])
+    p=try p.addingLayer(from:p.clips[0].id,at:0)
+    var gapped=VideoClip(path:"c.mp4",duration:500); gapped.timelineGap=300
+    let q=try p.addingLayerTrack([VideoClip(path:"b.mp4",duration:1000),gapped],at:1500)
+    let track=q.layerTracks[0]
+    guard q.clips==p.clips,q.layerTracks.count==2,track.count==2,track.map(\.start)==[1500,2500],
+          track.allSatisfy({ $0.trackIdentifier==track[0].id && $0.clip.timelineGap==nil }),q.duration==3000 else { return false }
+    return rejects({ _ = try p.addingLayerTrack([],at:0) })
+}
 check("PiP stacking and project persistence preserve independent position and visibility") {
     let p=try Project().replacingClips([VideoClip(path:"a.mp4",duration:2000)])
     let q=try p.addingLayer(from:p.clips[0].id,at:0)
