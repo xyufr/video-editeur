@@ -149,6 +149,8 @@ final class GenerationJob {
     let directory: URL
     let tools: ToolSettings
     let languages: GenerationLanguages
+    /// Cues left without a translation because the model returned an empty or missing item.
+    private(set) var skippedTranslations=0
     init(directory: URL = supportDirectory.appendingPathComponent("Jobs/\(UUID().uuidString)"), tools: ToolSettings = .current, languages: GenerationLanguages = GenerationLanguages()) { self.directory=directory; self.tools=tools; self.languages=languages }
     func cancel() { runner.cancel() }
     func run(video: URL, duration: Int64, status: @escaping (String)->Void, partial: @escaping ([Cue])->Void) throws -> [Cue] {
@@ -191,13 +193,21 @@ final class GenerationJob {
         let schemaText=#"{"type":"object","properties":{"translations":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"text":{"type":"string"}},"required":["id","text"],"additionalProperties":false}}},"required":["translations"],"additionalProperties":false}"#
         try schemaText.write(to:schema,atomically:true,encoding:.utf8)
         let count=(source.count+29)/30
+        skippedTranslations=0
+        /// Strict merge first; on content errors keep usable items instead of failing the whole job.
+        func usable(_ response: TranslationBatch, _ batch: [Cue]) -> [Cue]? {
+            if let strict=try? Translator.merge(response.translations,source:batch,target:languages.target) { return strict }
+            let lenient=Translator.mergeSkippingEmpty(response.translations,source:batch,target:languages.target)
+            guard !lenient.cues.isEmpty else { return nil }
+            skippedTranslations += lenient.skipped; return lenient.cues
+        }
         for index in 0..<count {
             guard !runner.isCancelled else { throw SubtitleError.invalid(L("任务已取消")) }
             let batch=Array(source[(index*30)..<min(source.count,(index+1)*30)])
             let output=directory.appendingPathComponent("batch-\(index).json")
             status(L("{0}翻译 · {1} / {2}", [languages.target.title, String(index+1), String(count)]))
             var translated: [Cue]?
-            if let data=try? Data(contentsOf:output),let response=try? JSONDecoder().decode(TranslationBatch.self,from:data) { translated=try? Translator.merge(response.translations,source:batch,target:languages.target) }
+            if let data=try? Data(contentsOf:output),let response=try? JSONDecoder().decode(TranslationBatch.self,from:data) { translated=usable(response,batch) }
             if translated == nil {
                 let data=try JSONEncoder().encode(batch.map { Translation(id:$0.id,text:$0.text) })
                 let prompt="""
@@ -207,18 +217,18 @@ final class GenerationJob {
                 \(String(decoding:data,as:UTF8.self))
                 END_SUBTITLE_DATA
                 """
-                var lastError: Error?
+                var lastError: Error?, toolFailed=false
                 for attempt in 0..<2 {
-                    do {
-                        if attempt > 0 { status(L("{0}翻译 · 重试第 {1} 批", [languages.target.title, String(index+1)])) }
-                        try translate(prompt:prompt,schema:schemaText,schemaFile:schema,output:output)
-                        let response=try JSONDecoder().decode(TranslationBatch.self,from:Data(contentsOf:output))
-                        translated=try Translator.merge(response.translations,source:batch,target:languages.target); break
-                    } catch { lastError=error; if runner.isCancelled { throw error } }
+                    if attempt > 0 { status(L("{0}翻译 · 重试第 {1} 批", [languages.target.title, String(index+1)])) }
+                    do { try translate(prompt:prompt,schema:schemaText,schemaFile:schema,output:output); toolFailed=false }
+                    catch { if runner.isCancelled { throw error }; lastError=error; toolFailed=true; continue }
+                    if let data=try? Data(contentsOf:output),let response=try? JSONDecoder().decode(TranslationBatch.self,from:data),let cues=usable(response,batch) { translated=cues; break }
                 }
-                guard translated != nil else { throw lastError ?? SubtitleError.invalid(L("翻译失败，请重试")) }
+                // Tool/account failures still stop the job; an unusable response only skips this batch.
+                if translated == nil, toolFailed { throw lastError ?? SubtitleError.invalid(L("翻译失败，请重试")) }
+                if translated == nil { skippedTranslations += batch.count }
             }
-            all += translated!; partial(all)
+            all += translated ?? []; partial(all)
             try SRT.encode(all.filter { $0.language == languages.target }).write(to:directory.appendingPathComponent("translated.\(languages.target.rawValue).srt"),atomically:true,encoding:.utf8)
         }
         status(L("校验双语字幕"))

@@ -137,6 +137,7 @@ public enum UILocalization {
         "{0}翻译 · {1} / {2}": "{0} translation · {1} / {2}",
         "{0}翻译 · 重试第 {1} 批": "{0} translation · Retrying batch {1}",
         "字幕已生成 · {0} 条": "Subtitles generated · {0} cues",
+        "{0} 条未返回译文，已跳过": "{0} without translation skipped",
         "不保存": "Don’t Save",
         "退出前保存工程？": "Save the project before quitting?",
         "工程有未保存的修改。选择不保存将保留上次保存的工程版本。": "The project has unsaved changes. Don’t Save keeps the last saved version of the project.",

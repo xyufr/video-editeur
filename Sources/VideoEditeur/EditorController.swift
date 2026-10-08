@@ -953,7 +953,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
                 let result=try job.run(video:transcriptionInput,duration:original.duration,status:{ message in DispatchQueue.main.async { self?.statusLabel.stringValue=message } },partial:{ cues in DispatchQueue.main.async { guard let self, self.generation === job else { return }; self.project=generationProject; self.project.cues=cues+original.cues.filter{$0.trackID != nil}; self.selected=nil; self.refresh(); self.scheduleSave() } })
                 DispatchQueue.main.async {
                     guard let self, self.generation === job else { return }; self.project=original; var next=generationProject; next.cues=result+original.cues.filter{$0.trackID != nil}; self.commit(next,name:L("生成字幕"))
-                    self.generation=nil; self.retryDirectory=nil; UserDefaults.standard.removeObject(forKey:"pendingJob"); self.generateButton.title=L("生成字幕"); self.setBusy(false); self.statusLabel.stringValue=L("字幕已生成 · {0} 条", [String(result.count)]); self.persistNow()
+                    self.generation=nil; self.retryDirectory=nil; UserDefaults.standard.removeObject(forKey:"pendingJob"); self.generateButton.title=L("生成字幕"); self.setBusy(false); self.statusLabel.stringValue=L("字幕已生成 · {0} 条", [String(result.count)])+(job.skippedTranslations>0 ? " · "+L("{0} 条未返回译文，已跳过", [String(job.skippedTranslations)]) : ""); self.persistNow()
                     if let first=result.first { self.select(first.id) }
                 }
             } catch {

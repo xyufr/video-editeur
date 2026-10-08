@@ -234,4 +234,16 @@ public enum Translator {
             return Cue(language: target, start: cue.start, end: cue.end, text: text)
         }
     }
+    /// Fallback when strict validation fails: keep every non-empty translation (names may stay untranslated)
+    /// and skip items whose translation is empty or missing, so one bad cue cannot stop the job.
+    public static func mergeSkippingEmpty(_ translations: [Translation], source: [Cue], target: Language = .zh) -> (cues: [Cue], skipped: Int) {
+        var map: [UUID: String] = [:]
+        for item in translations where map[item.id] == nil { map[item.id] = item.text }
+        let cues = source.compactMap { cue -> Cue? in
+            guard let raw = map[cue.id] else { return nil }
+            let text = raw.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.joined(separator: target == .zh ? "，" : " ")
+            return text.isEmpty ? nil : Cue(language: target, start: cue.start, end: cue.end, text: text)
+        }
+        return (cues, source.count - cues.count)
+    }
 }

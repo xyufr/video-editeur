@@ -72,7 +72,7 @@ extension EditorController {
                 DispatchQueue.main.async { [weak self] in
                     guard let self,self.generation === job else { return }
                     self.generation=nil; self.subtitleFileRetryDirectory=nil; self.setBusy(false)
-                    self.statusLabel.stringValue=L("字幕文件已保存：{0}",[urls[0].deletingLastPathComponent().path])
+                    self.statusLabel.stringValue=L("字幕文件已保存：{0}",[urls[0].deletingLastPathComponent().path])+(job.skippedTranslations>0 ? " · "+L("{0} 条未返回译文，已跳过", [String(job.skippedTranslations)]) : "")
                     NSWorkspace.shared.activateFileViewerSelecting(urls)
                 }
             } catch {

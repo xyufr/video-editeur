@@ -47,6 +47,13 @@ check("Translation reorders by ID preserving times") {
 }
 check("Translation rejects missing IDs") { rejects { _ = try Translator.merge([Translation(id:cues[0].id,text:"你好")],source:cues) } }
 check("Translation rejects duplicate IDs") { rejects { _ = try Translator.merge([Translation(id:cues[0].id,text:"你好"),Translation(id:cues[0].id,text:"你好")],source:cues) } }
+check("Lenient translation keeps names and skips empty or missing items") {
+    let source=[Cue(language:.fr,start:0,end:1000,text:"Nébécé, El Cabré."),Cue(language:.fr,start:1000,end:2000,text:"Bonjour"),Cue(language:.fr,start:2000,end:3000,text:"Merci"),Cue(language:.fr,start:3000,end:4000,text:"Oui")]
+    let replies=[Translation(id:source[0].id,text:"Nébécé, El Cabré。"),Translation(id:source[1].id,text:"  \n "),Translation(id:source[3].id,text:"是\n的"),Translation(id:source[3].id,text:"重复"),Translation(id:UUID(),text:"多余")]
+    guard rejects({ _ = try Translator.merge(replies,source:source) }) else { return false }
+    let result=Translator.mergeSkippingEmpty(replies,source:source)
+    return result.skipped==2 && result.cues.map(\.text)==["Nébécé, El Cabré。","是，的"] && result.cues.map(\.start)==[0,3000] && result.cues.allSatisfy { $0.language == .zh }
+}
 check("Translation rejects untranslated French") { rejects { _ = try Translator.merge(cues.map { Translation(id:$0.id,text:$0.text) },source:cues) } }
 check("Punctuation cue does not reject a translated batch") {
     let source=[Cue(language:.fr,start:0,end:1000,text:"Bonjour"),Cue(language:.fr,start:1000,end:1500,text:"?")]

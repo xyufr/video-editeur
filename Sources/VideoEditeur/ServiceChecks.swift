@@ -392,6 +392,37 @@ func runMultilingualChecks() throws {
     var sonnetTools=claudeTools; sonnetTools.claudeModel = .sonnet
     _ = try GenerationJob(directory:dir.appendingPathComponent("claude-sonnet-job"),tools:sonnetTools).run(video:dir.appendingPathComponent("fixture.mp4"),duration:2000,status:{_ in},partial:{_ in})
     guard try String(contentsOf:dir.appendingPathComponent("claude-sonnet-job/model.txt"),encoding:.utf8) == "sonnet" else { throw SubtitleError.invalid("Claude model choice was not passed") }
+    // Partial replies: one untranslated name, one empty item, then an unusable batch; the job must finish.
+    let partialSkill=dir.appendingPathComponent("partial-skill")
+    try FileManager.default.createDirectory(at:partialSkill.appendingPathComponent("scripts"),withIntermediateDirectories:true)
+    try "fixture".write(to:partialSkill.appendingPathComponent("SKILL.md"),atomically:true,encoding:.utf8)
+    let manyCues=#"""
+    import sys
+    from pathlib import Path
+    lines=[]
+    for i in range(32):
+        lines+= [str(i+1),'00:00:%02d,000 --> 00:00:%02d,500' % (i,i),'Nébécé, El Cabré.' if i==0 else 'Bonjour %d' % i,'']
+    Path(sys.argv[sys.argv.index('--output')+1]).write_text('\n'.join(lines))
+    """#
+    try manyCues.write(to:partialSkill.appendingPathComponent("scripts/transcribe_srt.py"),atomically:true,encoding:.utf8)
+    let partialClaude=dir.appendingPathComponent("claude-partial")
+    let partialTranslator=#"""
+    #!/usr/bin/python3
+    import json,sys
+    prompt=sys.stdin.read()
+    data=json.loads(prompt.split('BEGIN_SUBTITLE_DATA\n')[1].split('\nEND_SUBTITLE_DATA')[0])
+    if len(data) < 30:
+        print(json.dumps({'type':'result','is_error':False,'structured_output':{'oops':True}})); sys.exit(0)
+    items=[{'id':x['id'],'text':x['text'].replace('.','。') if i==0 else ('' if i==1 else '你好')} for i,x in enumerate(data)]
+    print(json.dumps({'type':'result','is_error':False,'structured_output':{'translations':items}}))
+    """#
+    try partialTranslator.write(to:partialClaude,atomically:true,encoding:.utf8)
+    try FileManager.default.setAttributes([.posixPermissions:0o755],ofItemAtPath:partialClaude.path)
+    let partialJob=GenerationJob(directory:dir.appendingPathComponent("claude-partial-job"),tools:ToolSettings(ffmpeg:"/usr/bin/true",python:"/usr/bin/python3",skill:partialSkill.path,model:.claude,claude:partialClaude.path))
+    let partialCues=try partialJob.run(video:dir.appendingPathComponent("fixture.mp4"),duration:40000,status:{_ in},partial:{_ in})
+    let partialZh=partialCues.filter { $0.language == .zh }
+    guard partialCues.filter({ $0.language == .fr }).count == 32, partialZh.count == 29, partialZh.first?.text == "Nébécé, El Cabré。",
+          partialJob.skippedTranslations == 3 else { throw SubtitleError.invalid("Partial translation stopped the job: \(partialZh.count) zh, \(partialJob.skippedTranslations) skipped") }
     let loggedOut=dir.appendingPathComponent("claude-logged-out")
     try "#!/bin/sh\ncat >/dev/null\necho '{\"type\":\"result\",\"is_error\":true,\"result\":\"Not logged in · Please run /login\"}'\nexit 1\n".write(to:loggedOut,atomically:true,encoding:.utf8)
     try FileManager.default.setAttributes([.posixPermissions:0o755],ofItemAtPath:loggedOut.path)
@@ -434,7 +465,7 @@ func runMultilingualChecks() throws {
     editor.showSettings()
     editor.refresh()
     guard editor.displayMode.label(forSegment:0) == Language.en.title, editor.displayMode.label(forSegment:1) == Language.fr.title else { throw SubtitleError.invalid("Display language controls failed") }
-    print("MULTILINGUAL_OK six pairs, Claude/Codex routing, Claude login error, legacy settings, same-language transcription, cache isolation, retry, picker defaults/cancel and display labels (offline fixtures)")
+    print("MULTILINGUAL_OK six pairs, Claude/Codex routing, Claude login error, skipped empty/unusable translations, legacy settings, same-language transcription, cache isolation, retry, picker defaults/cancel and display labels (offline fixtures)")
 }
 
 func runTimelineFileDropChecks() throws {
