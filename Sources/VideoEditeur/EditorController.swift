@@ -220,6 +220,10 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
             button.image=timelineCutIcon(index); button.imagePosition = .imageOnly
             bottom.addSubview(button)
         }
+        let endTogether=ActionButton("",symbol:"arrow.forward.to.line",action:{[weak self] in self?.endSplitTogether()})
+        endTogether.identifier=NSUserInterfaceItemIdentifier("endTogether"); endTogether.imagePosition = .imageOnly
+        endTogether.toolTip=L("让分屏视频同时结束（按最短的视频裁剪）"); endTogether.setAccessibilityLabel(L("同时结束"))
+        bottom.addSubview(endTogether)
         table.onDeselect={[weak self] in self?.clearSelection() }
         overlay.onDeselect={[weak self] in self?.clearSelection() }
         timeline.onDeselect={[weak self] in self?.clearSelection() }
@@ -397,7 +401,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         bottom.subviews.first{$0.identifier?.rawValue == "newText"}?.frame=NSRect(x:383,y:bottomH-35,width:112,height:28)
         bottom.subviews.first{$0.identifier?.rawValue == "deleteTrack"}?.frame=NSRect(x:503,y:bottomH-35,width:112,height:28)
         bottom.subviews.first{$0.identifier?.rawValue == "clipEdit"}?.frame=NSRect(x:625,y:bottomH-35,width:148,height:28)
-        for (index,name) in ["splitVideo","trimVideoLeft","trimVideoRight"].enumerated() {
+        for (index,name) in ["splitVideo","trimVideoLeft","trimVideoRight","endTogether"].enumerated() {
             bottom.subviews.first{$0.identifier?.rawValue == name}?.frame=NSRect(x:781+CGFloat(index)*33,y:bottomH-35,width:30,height:28)
         }
         zoom.frame=NSRect(x:bottom.bounds.width-175,y:bottomH-33,width:156,height:24)

@@ -8,6 +8,16 @@ public struct ClipEffects: Codable, Equatable {
     public var fadeOut: Int64 = 0
     public init() {}
 }
+/// How an erase region hides text. Missing in older projects means `solid`.
+public enum EraseFill: String, Codable, CaseIterable {
+    /// Rebuild the background from the pixels around the box every frame and replace only pixels
+    /// that differ clearly from it (the text strokes); the rest of the box keeps the original picture.
+    case smart
+    /// Replace the whole box with the background rebuilt from the surrounding pixels.
+    case patch
+    /// One colour: `color`, or the strip along the bottom edge sampled every frame when `color` is nil.
+    case solid
+}
 public struct VideoEraseRegion: Codable, Equatable, Identifiable {
     public var id=UUID()
     /// Normalized output-frame coordinates, origin at bottom left.
@@ -19,8 +29,10 @@ public struct VideoEraseRegion: Codable, Equatable, Identifiable {
     public var sourceEnd: Int64
     /// nil samples the background strip just inside the bottom edge every frame.
     public var color: RGBA?
-    public init(x: Double,y: Double,width: Double,height: Double,sourceStart: Int64,sourceEnd: Int64,color: RGBA? = nil) {
-        self.x=x; self.y=y; self.width=width; self.height=height; self.sourceStart=sourceStart; self.sourceEnd=sourceEnd; self.color=color
+    public var fill: EraseFill?
+    public var fillMode: EraseFill { fill ?? .solid }
+    public init(x: Double,y: Double,width: Double,height: Double,sourceStart: Int64,sourceEnd: Int64,color: RGBA? = nil,fill: EraseFill? = nil) {
+        self.fill=fill; self.x=x; self.y=y; self.width=width; self.height=height; self.sourceStart=sourceStart; self.sourceEnd=sourceEnd; self.color=color
     }
 }
 public struct VideoClip: Codable, Equatable, Identifiable {

@@ -36,21 +36,24 @@ extension EditorController {
         guard panel.runModal() == .OK else { return }
         let urls=panel.urls
         guard (1...4).contains(urls.count) else { showError(SubtitleError.invalid(L("分屏需要 1–4 个视频；2×2 需要 4 个"))); return }
-        guard let (layout,canvas)=chooseSplitLayout(count:urls.count) else { return }
-        addSplitScreen(urls,layout:layout,canvas:canvas)
+        guard let (layout,canvas,together)=chooseSplitLayout(count:urls.count) else { return }
+        addSplitScreen(urls,layout:layout,canvas:canvas,endTogether:together)
     }
-    func chooseSplitLayout(count: Int) -> (SplitLayout,CanvasAspect)? {
+    func chooseSplitLayout(count: Int) -> (SplitLayout,CanvasAspect,Bool)? {
         let alert=NSAlert(); alert.messageText=L("分屏 · {0} 个视频",[String(count)])
         alert.informativeText=project.clips.isEmpty
-            ? L("第一个视频作为主视频，其余各占一条新视频轨道，从 0 秒同时开始。每个视频填满自己的格子，超出部分裁掉。")
-            : L("每个视频各占一条新视频轨道，从播放头 {0} 同时开始。每个视频填满自己的格子，超出部分裁掉。",[String(SRT.timestamp(current).prefix(8))])
-        let box=NSView(frame:NSRect(x:0,y:0,width:360,height:76))
-        let layoutTitle=label(L("排列"),size:12); layoutTitle.frame=NSRect(x:0,y:46,width:90,height:24); box.addSubview(layoutTitle)
-        let canvasTitle=label(L("画布"),size:12); canvasTitle.frame=NSRect(x:0,y:6,width:90,height:24); box.addSubview(canvasTitle)
-        let canvasChoice=NSPopUpButton(frame:NSRect(x:95,y:4,width:260,height:28),pullsDown:false)
+            ? L("第一个视频作为主视频，其余各占一条新视频轨道，从 0 秒同时开始。")
+            : L("每个视频各占一条新视频轨道，从播放头 {0} 同时开始。",[String(SRT.timestamp(current).prefix(8))])
+        let box=NSView(frame:NSRect(x:0,y:0,width:360,height:106))
+        let together=NSButton(checkboxWithTitle:L("同时结束（按最短的视频裁剪）"),target:nil,action:nil)
+        together.state = count>1 ? .on : .off; together.isEnabled=count>1; together.identifier=NSUserInterfaceItemIdentifier("splitEndTogether")
+        together.frame=NSRect(x:93,y:6,width:265,height:22); box.addSubview(together)
+        let layoutTitle=label(L("排列"),size:12); layoutTitle.frame=NSRect(x:0,y:76,width:90,height:24); box.addSubview(layoutTitle)
+        let canvasTitle=label(L("画布"),size:12); canvasTitle.frame=NSRect(x:0,y:38,width:90,height:24); box.addSubview(canvasTitle)
+        let canvasChoice=NSPopUpButton(frame:NSRect(x:95,y:36,width:260,height:28),pullsDown:false)
         canvasChoice.addItems(withTitles:CanvasAspect.allCases.map(\.title)); canvasChoice.setAccessibilityLabel(L("画布"))
         let layouts=SplitLayout.allCases
-        let layoutChoice=ActionPopUp(frame:NSRect(x:95,y:44,width:260,height:28),items:layouts.map(\.title)) {}
+        let layoutChoice=ActionPopUp(frame:NSRect(x:95,y:74,width:260,height:28),items:layouts.map(\.title)) {}
         layoutChoice.setAccessibilityLabel(L("排列")); layoutChoice.autoenablesItems=false
         for (i,layout) in layouts.enumerated() { layoutChoice.item(at:i)?.isEnabled=layout.supports(count) }
         func select(_ layout: SplitLayout) {
@@ -65,9 +68,9 @@ extension EditorController {
         box.addSubview(layoutChoice); box.addSubview(canvasChoice)
         alert.accessoryView=box; alert.addButton(withTitle:L("添加")); alert.addButton(withTitle:L("取消"))
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        return (layouts[max(0,layoutChoice.indexOfSelectedItem)],CanvasAspect.allCases[max(0,canvasChoice.indexOfSelectedItem)])
+        return (layouts[max(0,layoutChoice.indexOfSelectedItem)],CanvasAspect.allCases[max(0,canvasChoice.indexOfSelectedItem)],together.state == .on)
     }
-    @discardableResult func addSplitScreen(_ urls: [URL],layout: SplitLayout,canvas: CanvasAspect) -> Bool {
+    @discardableResult func addSplitScreen(_ urls: [URL],layout: SplitLayout,canvas: CanvasAspect,endTogether: Bool=false) -> Bool {
         guard !busy else { return false }
         do {
             // Letterbox bars recorded into a source would otherwise be enlarged into the cell.
@@ -75,7 +78,8 @@ extension EditorController {
                 var clip=VideoClip(path:url.path,duration:try MediaProbe(url.path).duration)
                 clip.crop=BlackBorderDetector.detect(path:url.path); return clip
             }
-            let next=try project.addingSplitScreen(videos,layout:layout,canvas:canvas,at:current,aspects:try videos.map { try shownAspect($0) })
+            var next=try project.addingSplitScreen(videos,layout:layout,canvas:canvas,at:current,aspects:try videos.map { try shownAspect($0) })
+            if endTogether,videos.count>1 { next=try next.endingTogether(with:videos[0].id) }
             commit(next,name:L("分屏"))
             guard project == next else { return false }
             loadTimelineThumbnails(for:videos)
@@ -141,5 +145,18 @@ struct FrameControls {
         guard values.allSatisfy({ $0 != nil }) else { return nil }
         let crop=VideoCrop(top:values[0]!/100,bottom:values[1]!/100,left:values[2]!/100,right:values[3]!/100)
         return .some(crop.isEmpty ? nil : crop)
+    }
+}
+
+extension EditorController {
+    /// Trims the split-screen group of the selected clip (or the one under the playhead) to end together.
+    func endSplitTogether() {
+        guard !busy else { return }
+        let framed=project.renderPlacements.filter { $0.clip.frame != nil }
+        guard let id=framed.first(where:{ $0.clip.id == selectedClip })?.clip.id ?? framed.first(where:{ $0.start<=current && current<$0.end })?.clip.id else {
+            showError(SubtitleError.invalid(L("请先选中分屏中的一个视频"))); return
+        }
+        pauseForEditing()
+        do { commit(try project.endingTogether(with:id),name:L("同时结束")) } catch { showError(error) }
     }
 }

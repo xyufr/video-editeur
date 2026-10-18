@@ -91,12 +91,11 @@ struct EditedAsset {
         asset=AVMutableComposition(); video=AVMutableVideoComposition(); audio=AVMutableAudioMix()
         var layers: [RenderLayer]=[],parameters: [AVAudioMixInputParameters]=[]
         let places=project.renderPlacements
-        var frameDuration=CMTime(value:1,timescale:30)
+        let frameDuration=Self.outputFrameDuration(rates:Set(places.map(\.clip.path)).compactMap { AVURLAsset(url:URL(fileURLWithPath:$0)).tracks(withMediaType:.video).first?.nominalFrameRate })
         for (i,p) in places.enumerated() {
             let source=AVURLAsset(url:URL(fileURLWithPath:p.clip.path))
             guard let v=source.tracks(withMediaType:.video).first,
                   let target=asset.addMutableTrack(withMediaType:.video,preferredTrackID:kCMPersistentTrackID_Invalid) else { throw SubtitleError.invalid(L("找不到视频：{0}", [String(describing: p.clip.path)])) }
-            if i==0,v.minFrameDuration.isValid,CMTimeGetSeconds(v.minFrameDuration)>0 { frameDuration=v.minFrameDuration }
             let sourceRange=CMTimeRange(start:CMTime(value:p.clip.sourceStart,timescale:1000),duration:CMTime(value:p.clip.duration,timescale:1000))
             // Edit lists can start with an empty segment (no picture); only real media counts, and the
             // hold-frame code below fills the gap with the first frame.
@@ -154,6 +153,16 @@ struct EditedAsset {
         video.instructions=zip(boundaries,boundaries.dropFirst()).map { a,b in
             EditInstruction(start:a,end:b,layers:layers.filter{$0.placement.start<=a && $0.placement.end>a},project:project,color:color,subtitles:subtitles,speed:speed)
         }
+    }
+    /// Output frame rate: the highest nominal source rate, snapped to a standard rate and capped at 60.
+    /// Not `minFrameDuration`, which in variable-frame-rate files can be a single 1/600 s frame and would
+    /// produce a 600 fps file that players show in slow motion.
+    static func outputFrameDuration(rates: [Float]) -> CMTime {
+        let standard: [(value: Int64,scale: Int32)]=[(1001,24000),(1,24),(1,25),(1001,30000),(1,30),(1,50),(1001,60000),(1,60)]
+        guard let fps=rates.filter({ $0.isFinite && $0>=1 }).max().map({ min(60,Double($0)) }) else { return CMTime(value:1,timescale:30) }
+        let nearest=standard.min { abs(Double($0.scale)/Double($0.value)-fps) < abs(Double($1.scale)/Double($1.value)-fps) }!
+        if abs(Double(nearest.scale)/Double(nearest.value)-fps)<0.5 { return CMTime(value:nearest.value,timescale:nearest.scale) }
+        return CMTime(value:1,timescale:Int32(max(1,fps.rounded())))
     }
     func playerItem() -> AVPlayerItem {
         let item=AVPlayerItem(asset:asset); item.videoComposition=video; item.audioMix=audio; return item
@@ -224,25 +233,78 @@ final class EditCompositor: NSObject, AVVideoCompositing {
     func cancelAllPendingVideoCompositionRequests() { queue.sync { lastFrames.removeAll() } }
 }
 
-/// Solid-background text removal; this does not reconstruct textured or moving scenery.
+/// Text removal inside user-drawn boxes. `smart` and `patch` rebuild the background each frame from the
+/// pixels around the box (a Coons patch: edge interpolation in both directions minus the corner blend);
+/// this is interpolation, not AI inpainting or motion tracking. `solid` covers the box with one colour.
 enum VideoRegionRenderer {
     static func apply(to image: CIImage,clip: VideoClip,sourceTime: Int64,size: CGSize) -> CIImage {
         var result=image
         for region in clip.eraseRegions ?? [] where region.sourceStart<=sourceTime && sourceTime<region.sourceEnd {
-            let box=CGRect(x:region.x*size.width,y:region.y*size.height,width:region.width*size.width,height:region.height*size.height)
-            let fill: CIImage
-            if let color=region.color {
-                fill=CIImage(color:CIColor(color:color.ns)!).cropped(to:box)
-            } else {
-                // Keep a thin blank border inside the selection for reliable auto sampling.
-                let inset=min(2,box.width/4),stripHeight=min(3,max(1,box.height*0.04))
-                let strip=CGRect(x:box.minX+inset,y:box.minY+min(1,box.height/8),width:max(1,box.width-2*inset),height:stripHeight).intersection(image.extent)
-                guard !strip.isNull,!strip.isEmpty else { continue }
-                fill=image.applyingFilter("CIAreaAverage",parameters:[kCIInputExtentKey:CIVector(cgRect:strip)]).clampedToExtent().cropped(to:box)
+            let box=CGRect(x:region.x*size.width,y:region.y*size.height,width:region.width*size.width,height:region.height*size.height).intersection(image.extent).integral
+            guard !box.isNull,box.width>=2,box.height>=2 else { continue }
+            switch region.fillMode {
+            case .smart: result=rebuilt(result,box:box,strokesOnly:true).composited(over:result)
+            case .patch: result=rebuilt(result,box:box,strokesOnly:false).composited(over:result)
+            case .solid: result=solid(result,region:region,box:box).composited(over:result)
             }
-            result=fill.composited(over:result)
         }
         return result
+    }
+    private static func solid(_ image: CIImage,region: VideoEraseRegion,box: CGRect) -> CIImage {
+        if let color=region.color { return CIImage(color:CIColor(color:color.ns)!).cropped(to:box) }
+        // Keep a thin blank border inside the selection for reliable auto sampling.
+        let inset=min(2,box.width/4),stripHeight=min(3,max(1,box.height*0.04))
+        let strip=CGRect(x:box.minX+inset,y:box.minY+min(1,box.height/8),width:max(1,box.width-2*inset),height:stripHeight).intersection(image.extent)
+        guard !strip.isNull,!strip.isEmpty else { return CIImage.empty() }
+        return image.applyingFilter("CIAreaAverage",parameters:[kCIInputExtentKey:CIVector(cgRect:strip)]).clampedToExtent().cropped(to:box)
+    }
+    /// Background estimate for `box` from the ring of pixels just outside it; with `strokesOnly`, only pixels
+    /// that differ clearly from that estimate (dilated a little to cover outlines and shadows) are replaced.
+    static func rebuilt(_ image: CIImage,box: CGRect,strokesOnly: Bool) -> CIImage {
+        // Lightly blurred and clamped so single noisy pixels and the frame edge do not streak across the box.
+        let source=image.clampedToExtent().applyingGaussianBlur(sigma:1.2)
+        let gap: CGFloat=2
+        func pixel(_ x: CGFloat,_ y: CGFloat) -> CIImage { source.cropped(to:CGRect(x:floor(x),y:floor(y),width:1,height:1)).clampedToExtent().cropped(to:box) }
+        /// One column (or row) outside the box, repeated across it.
+        func column(_ x: CGFloat) -> CIImage { source.cropped(to:CGRect(x:floor(x),y:box.minY,width:1,height:box.height)).clampedToExtent().cropped(to:box) }
+        func row(_ y: CGFloat) -> CIImage { source.cropped(to:CGRect(x:box.minX,y:floor(y),width:box.width,height:1)).clampedToExtent().cropped(to:box) }
+        func ramp(horizontal: Bool) -> CIImage {
+            let start=horizontal ? CIVector(x:box.minX,y:box.midY) : CIVector(x:box.midX,y:box.minY)
+            let end=horizontal ? CIVector(x:box.maxX,y:box.midY) : CIVector(x:box.midX,y:box.maxY)
+            return CIFilter(name:"CILinearGradient",parameters:["inputPoint0":start,"inputPoint1":end,"inputColor0":CIColor.black,"inputColor1":CIColor.white])!.outputImage!.cropped(to:box)
+        }
+        func mix(_ a: CIImage,_ b: CIImage,_ mask: CIImage) -> CIImage { b.applyingFilter("CIBlendWithMask",parameters:[kCIInputBackgroundImageKey:a,kCIInputMaskImageKey:mask]).cropped(to:box) }
+        let across=ramp(horizontal:true),up=ramp(horizontal:false)
+        let (left,right,bottom,top)=(box.minX-gap,box.maxX+gap-1,box.minY-gap,box.maxY+gap-1)
+        let horizontal=mix(column(left),column(right),across)
+        let vertical=mix(row(bottom),row(top),up)
+        let corners=mix(mix(pixel(left,bottom),pixel(right,bottom),across),mix(pixel(left,top),pixel(right,top),across),up)
+        // Coons patch: H + V − bilinear(corners) matches the surrounding pixels on all four sides.
+        // Negated corners carry zero alpha so the sum keeps the opaque alpha of H + V.
+        let negated=corners.applyingFilter("CIColorMatrix",parameters:["inputRVector":CIVector(x:-1,y:0,z:0,w:0),"inputGVector":CIVector(x:0,y:-1,z:0,w:0),"inputBVector":CIVector(x:0,y:0,z:-1,w:0),"inputAVector":CIVector(x:0,y:0,z:0,w:0)])
+        let background=horizontal.applyingFilter("CIAdditionCompositing",parameters:[kCIInputBackgroundImageKey:vertical])
+            .applyingFilter("CIAdditionCompositing",parameters:[kCIInputBackgroundImageKey:negated])
+            .applyingFilter("CIColorClamp").cropped(to:box)
+        guard strokesOnly else { return background }
+        // Stroke mask: luminance distance from the estimate, thresholded, dilated and softened.
+        let difference=image.cropped(to:box).applyingFilter("CIColorAbsoluteDifference",parameters:["inputImage2":background])
+        let weights=CIVector(x:0.3*7,y:0.59*7,z:0.11*7,w:0),bias=CIVector(x:-0.55,y:-0.55,z:-0.55,w:1)
+        let level=difference.applyingFilter("CIColorMatrix",parameters:["inputRVector":weights,"inputGVector":weights,"inputBVector":weights,"inputAVector":CIVector(x:0,y:0,z:0,w:0),"inputBiasVector":bias]).applyingFilter("CIColorClamp")
+        let radius=max(1.5,min(box.width,box.height)*0.05)
+        let mask=level.clampedToExtent().applyingFilter("CIMorphologyMaximum",parameters:[kCIInputRadiusKey:radius]).applyingGaussianBlur(sigma:1).cropped(to:box)
+        // Fill strokes from nearby non-text pixels (normalized convolution: blur(image·keep) / blur(keep)), so
+        // something passing the box edge does not leave a ghost of the letters. Where text covers too much
+        // to have nearby picture, fall back to the edge interpolation.
+        let keep=mask.applyingFilter("CIColorInvert")
+        let sigma=max(3,radius*2.5)
+        let weighted=image.cropped(to:box).applyingFilter("CIMultiplyCompositing",parameters:[kCIInputBackgroundImageKey:keep])
+        let spread=weighted.clampedToExtent().applyingGaussianBlur(sigma:sigma).cropped(to:box)
+        let weight=keep.clampedToExtent().applyingGaussianBlur(sigma:sigma).cropped(to:box)
+        // CIDivideBlendMode computes background ÷ input.
+        let local=weight.applyingFilter("CIDivideBlendMode",parameters:[kCIInputBackgroundImageKey:spread]).applyingFilter("CIColorClamp").cropped(to:box)
+        let confidence=weight.applyingFilter("CIColorMatrix",parameters:["inputRVector":CIVector(x:8,y:0,z:0,w:0),"inputGVector":CIVector(x:8,y:0,z:0,w:0),"inputBVector":CIVector(x:8,y:0,z:0,w:0),"inputAVector":CIVector(x:0,y:0,z:0,w:0),"inputBiasVector":CIVector(x:0,y:0,z:0,w:1)]).applyingFilter("CIColorClamp")
+        let filled=mix(background,local,confidence)
+        return mix(image.cropped(to:box),filled,mask)
     }
 }
 

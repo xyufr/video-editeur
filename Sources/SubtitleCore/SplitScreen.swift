@@ -203,3 +203,44 @@ extension Project {
         return next
     }
 }
+
+extension Project {
+    /// The split-screen group around `id`: for every track (the main track counts as one) that has a
+    /// split cell overlapping `id`'s time, the last such clip. Returned as (track, clip id, start, end).
+    public func splitGroup(containing id: UUID) -> [(track: UUID?,clip: UUID,start: Int64,end: Int64)] {
+        guard let anchor=renderPlacements.first(where:{ $0.clip.id == id }),anchor.clip.frame != nil else { return [] }
+        let trackOf=Dictionary(uniqueKeysWithValues:layers.map { ($0.id,$0.trackIdentifier) })
+        var tails: [UUID?:(UUID,Int64,Int64)]=[:]
+        for p in renderPlacements where p.clip.frame != nil && p.start<anchor.end && anchor.start<p.end {
+            let track=trackOf[p.clip.id]
+            if let current=tails[track],current.2>=p.end { continue }
+            tails[track]=(p.clip.id,p.start,p.end)
+        }
+        return tails.map { (track:$0.key,clip:$0.value.0,start:$0.value.1,end:$0.value.2) }.sorted { $0.end<$1.end }
+    }
+    /// Trims the longer videos of a split-screen group so all end with the shortest one.
+    /// Main-track trims add the same gap before the next main clip, so nothing else moves.
+    public func endingTogether(with id: UUID) throws -> Project {
+        let group=splitGroup(containing:id)
+        guard group.count>1,let target=group.map(\.end).min() else { throw SubtitleError.invalid(L("请先选中分屏中的一个视频")) }
+        var next=self
+        var mainClips=clips
+        var layerValues=layers
+        for member in group where member.end>target {
+            guard target-member.start>=100 else { throw SubtitleError.invalid(L("视频开始得太晚，无法与最短的视频同时结束")) }
+            let cut=member.end-target
+            if let i=layerValues.firstIndex(where:{ $0.id == member.clip }) {
+                guard !layerValues[i].isLocked else { throw SubtitleError.invalid(L("视频轨道已锁定，请先解锁")) }
+                layerValues[i].clip.sourceEnd-=cut
+                layerValues[i].clip.effects.fadeOut=min(layerValues[i].clip.effects.fadeOut,layerValues[i].clip.duration-layerValues[i].clip.effects.fadeIn)
+            } else if let i=mainClips.firstIndex(where:{ $0.id == member.clip }) {
+                guard !isVideoLocked else { throw SubtitleError.invalid(L("视频轨道已锁定，请先解锁")) }
+                mainClips[i].sourceEnd-=cut
+                mainClips[i].effects.fadeOut=min(mainClips[i].effects.fadeOut,mainClips[i].duration-mainClips[i].effects.fadeIn)
+                if i+1<mainClips.count { mainClips[i+1].timelineGap=mainClips[i+1].gap+cut }
+            }
+        }
+        if mainClips != clips { next=try next.replacingClips(mainClips) }
+        return try next.replacingLayers(layerValues)
+    }
+}

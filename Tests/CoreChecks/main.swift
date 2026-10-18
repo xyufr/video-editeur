@@ -493,6 +493,26 @@ check("Split dividers move the shared edge, keep minimum sizes and follow cut pi
     let plain=try Project().replacingClips([VideoClip(path:"a",duration:1)])
     return hidden.splitDividers(at:1000).isEmpty && p.splitDividers(at:5000).isEmpty && plain.splitDividers(at:0).isEmpty
 }
+check("Ending together trims longer split videos to the shortest without moving other clips") {
+    // Main 6 s with a following main clip, split layers of 4 s and 9 s starting at 0.
+    var p=try Project().replacingClips([VideoClip(path:"main.mp4",duration:6000),VideoClip(path:"after.mp4",duration:2000)])
+    var cells=p.clips; cells[0].frame=SplitLayout.row.cells(3)[0]; p=try p.replacingClips(cells)
+    p.cues=[Cue(language:.fr,start:6500,end:7000,text:"After")]
+    var short=VideoLayer(clip:VideoClip(path:"s.mp4",duration:4000),start:0); short.clip.frame=SplitLayout.row.cells(3)[1]
+    var long=VideoLayer(clip:VideoClip(path:"l.mp4",duration:9000),start:0); long.clip.frame=SplitLayout.row.cells(3)[2]; long.clip.effects.fadeOut=3000
+    p=try p.replacingLayers([short,long])
+    guard p.splitGroup(containing:short.id).count == 3 else { return false }
+    let q=try p.endingTogether(with:long.id)
+    guard q.clips[0].duration == 4000,q.placements[1].start == 6000,q.placements[1].clip.gap == 2000,q.cues == p.cues,
+          q.layers.first(where:{ $0.id == long.id })?.end == 4000,q.layers.first(where:{ $0.id == long.id })?.clip.effects.fadeOut == 3000,
+          q.layers.first(where:{ $0.id == short.id })?.end == 4000 else { return false }
+    // A cut track counts by its last piece; a lone or locked video is rejected.
+    let cut=try p.cuttingLayer(long.id,at:2000)
+    guard cut.splitGroup(containing:short.id).count == 3,(try cut.endingTogether(with:short.id)).layers.map(\.end).max() == 4000 else { return false }
+    var locked=p; for i in locked.videoLayers!.indices { locked.videoLayers![i].locked=true }
+    let lone=try Project().replacingClips([VideoClip(path:"a.mp4",duration:1000)])
+    return rejects({ _ = try locked.endingTogether(with:short.id) }) && rejects({ _ = try lone.endingTogether(with:lone.clips[0].id) })
+}
 check("Projects saved before split screen decode with full-canvas clips and source canvas") {
     var legacy=try Project().replacingClips([VideoClip(path:"a.mp4",duration:1000)])
     legacy=try legacy.addingLayer(from:legacy.clips[0].id,at:0)

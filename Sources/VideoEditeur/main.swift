@@ -102,6 +102,22 @@ if CommandLine.arguments.contains("--check-local-library") {
 } else if CommandLine.arguments.count >= 4,CommandLine.arguments[1] == "--smoke-erase" {
     _=NSApplication.shared
     do { try runRegionEraseChecks(source:URL(fileURLWithPath:CommandLine.arguments[2]),destination:URL(fileURLWithPath:CommandLine.arguments[3])) } catch { fputs("\(error)\n",stderr); exit(1) }
+ } else if CommandLine.arguments.count >= 10,CommandLine.arguments[1] == "--preview-erase" {
+    // --preview-erase video out.png x y w h seconds smart|patch|solid: renders one frame with an erase box (normalized, Y up).
+    let n=CommandLine.arguments[4...8].compactMap { Double($0) }
+    guard n.count == 5,let fill=EraseFill(rawValue:CommandLine.arguments[9]) else { fputs("bad arguments\n",stderr); exit(1) }
+    do {
+        var p=try Project().replacingClips([VideoClip(path:CommandLine.arguments[2],duration:try MediaProbe(CommandLine.arguments[2]).duration)])
+        var clips=p.clips
+        clips[0].eraseRegions=[VideoEraseRegion(x:n[0],y:n[1],width:n[2],height:n[3],sourceStart:0,sourceEnd:clips[0].duration,color:fill == .solid ? RGBA(0.25,0.25,0.3,1) : nil,fill:fill)]
+        p=try p.replacingClips(clips)
+        let edited=try EditedAsset(project:p,color:.sdr,subtitles:false)
+        let generator=AVAssetImageGenerator(asset:edited.asset); generator.videoComposition=edited.video
+        generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+        let image=try generator.copyCGImage(at:CMTime(seconds:n[4],preferredTimescale:600),actualTime:nil)
+        try NSBitmapImageRep(cgImage:image).representation(using:.png,properties:[:])!.write(to:URL(fileURLWithPath:CommandLine.arguments[3]))
+        print("ERASE_PREVIEW_OK \(CommandLine.arguments[3])"); exit(0)
+    } catch { fputs("\(error)\n",stderr); exit(1) }
  } else if CommandLine.arguments.count >= 3,CommandLine.arguments[1] == "--detect-borders" {
     // Prints the letterbox crop the split screen would apply, as top/bottom/left/right percentages.
     for path in CommandLine.arguments.dropFirst(2) {

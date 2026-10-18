@@ -99,6 +99,30 @@ func runRegionEraseChecks(source: URL,destination: URL) throws {
     let manual=pixel(VideoRegionRenderer.apply(to:white,clip:clip,sourceTime:1000,size:CGSize(width:100,height:100)))
     guard manual[0]>250,manual[1]<5,manual[2]<5 else { throw SubtitleError.invalid("Manual fill mismatch") }
     print("PASS automatic background, manual fill and time window")
+    // Smart/patch: white "text" bars on a horizontal red→blue gradient with a dark speck inside the box.
+    let gradient=CIFilter(name:"CILinearGradient",parameters:["inputPoint0":CIVector(x:0,y:50),"inputPoint1":CIVector(x:200,y:50),"inputColor0":CIColor(red:1,green:0,blue:0),"inputColor1":CIColor(red:0,green:0,blue:1)])!.outputImage!.cropped(to:CGRect(x:0,y:0,width:200,height:100))
+    let speck=CIImage(color:CIColor(red:0.1,green:0.6,blue:0.1)).cropped(to:CGRect(x:150,y:60,width:4,height:4))
+    let text=[CGRect(x:50,y:40,width:30,height:8),CGRect(x:95,y:40,width:30,height:8)].reduce(gradient) { CIImage(color:CIColor(red:1,green:1,blue:1)).cropped(to:$1).composited(over:$0) }
+    let textured=speck.composited(over:text)
+    func rgb(_ image: CIImage,_ x: Int,_ y: Int) -> [Int] {
+        var bytes=[UInt8](repeating:0,count:4)
+        context.render(image,toBitmap:&bytes,rowBytes:4,bounds:CGRect(x:x,y:y,width:1,height:1),format:.RGBA8,colorSpace:CGColorSpace(name:CGColorSpace.sRGB)!)
+        return bytes.prefix(3).map(Int.init)
+    }
+    var smartClip=VideoClip(path:source.path,duration:2000)
+    smartClip.eraseRegions=[VideoEraseRegion(x:0.2,y:0.3,width:0.6,height:0.4,sourceStart:0,sourceEnd:2000,fill:.smart)]
+    let smart=VideoRegionRenderer.apply(to:textured,clip:smartClip,sourceTime:100,size:CGSize(width:200,height:100))
+    // Text pixels now follow the gradient; picture away from the strokes (inside and outside the box) is unchanged.
+    for x in [55,75,100,120] {
+        let after=rgb(smart,x,44),expected=rgb(gradient,x,44)
+        guard zip(after,expected).allSatisfy({ abs($0-$1)<=40 }),after[1]<60 else { throw SubtitleError.invalid("Smart repair left text at \(x): \(after) vs \(expected)") }
+    }
+    func same(_ a: [Int],_ b: [Int]) -> Bool { zip(a,b).allSatisfy { abs($0-$1)<=2 } }
+    guard same(rgb(smart,88,62),rgb(textured,88,62)),same(rgb(smart,10,44),rgb(textured,10,44)) else { throw SubtitleError.invalid("Smart repair changed pixels away from strokes: \(rgb(smart,88,62)) vs \(rgb(textured,88,62))") }
+    smartClip.eraseRegions?[0].fill = .patch
+    let patch=VideoRegionRenderer.apply(to:textured,clip:smartClip,sourceTime:100,size:CGSize(width:200,height:100))
+    guard zip(rgb(patch,65,44),rgb(gradient,65,44)).allSatisfy({ abs($0-$1)<=40 }),same(rgb(patch,10,44),rgb(textured,10,44)) else { throw SubtitleError.invalid("Patch fill failed") }
+    print("PASS smart repair replaces strokes and keeps the rest, patch fills from surroundings")
     let probe=try MediaProbe(source.path); clip=VideoClip(path:source.path,duration:probe.duration)
     clip.eraseRegions=[VideoEraseRegion(x:90.0/640,y:90.0/360,width:420.0/640,height:80.0/360,sourceStart:0,sourceEnd:probe.duration)]
     var project=try Project().replacingClips([clip])
@@ -149,6 +173,10 @@ func runMusicChecks(directory: URL) throws {
 
 /// Colored fixtures a (red), b (blue), c (green): each cell must show its own video edge to edge, in preview and export.
 func runSplitScreenChecks(directory: URL) throws {
+    // Output frame rate follows nominal rates (never a stray 1/600 s frame), snapped to standard rates, at most 60.
+    let rates: [([Float],CMTime)]=[([60.0356],CMTime(value:1,timescale:60)),([30.0445,60.0356],CMTime(value:1,timescale:60)),([29.97],CMTime(value:1001,timescale:30000)),
+                                   ([25],CMTime(value:1,timescale:25)),([23.976],CMTime(value:1001,timescale:24000)),([240],CMTime(value:1,timescale:60)),([15],CMTime(value:1,timescale:15)),([],CMTime(value:1,timescale:30)),([.nan],CMTime(value:1,timescale:30))]
+    for (input,expected) in rates where EditedAsset.outputFrameDuration(rates:input) != expected { throw SubtitleError.invalid("Frame rate \(input) -> \(CMTimeGetSeconds(EditedAsset.outputFrameDuration(rates:input)))") }
     let urls=["a","b","c"].map { directory.appendingPathComponent($0+".mp4") }
     func color(_ frame: CGImage,_ x: Int,_ y: Int) -> String {
         var bytes=[UInt8](repeating:0,count:4)
@@ -162,6 +190,10 @@ func runSplitScreenChecks(directory: URL) throws {
         generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
         let output=directory.appendingPathComponent(name+".mp4")
         try VideoExporter().run(project:project,destination:output) {_ in}
+        let exportedRate=Double(AVURLAsset(url:output).tracks(withMediaType:.video).first?.nominalFrameRate ?? 0)
+        let sourceRates=project.allClips.compactMap { AVURLAsset(url:URL(fileURLWithPath:$0.path)).tracks(withMediaType:.video).first?.nominalFrameRate }
+        let expectedRate=1/CMTimeGetSeconds(EditedAsset.outputFrameDuration(rates:sourceRates))
+        guard abs(exportedRate-expectedRate)<1 else { throw SubtitleError.invalid("Export frame rate \(exportedRate), expected \(expectedRate)") }
         let exported=AVAssetImageGenerator(asset:AVURLAsset(url:output))
         exported.requestedTimeToleranceBefore = .zero; exported.requestedTimeToleranceAfter = .zero
         return [try generator.copyCGImage(at:CMTime(value:ms,timescale:1000),actualTime:nil),try exported.copyCGImage(at:CMTime(value:ms,timescale:1000),actualTime:nil)]
@@ -174,7 +206,7 @@ func runSplitScreenChecks(directory: URL) throws {
         }
         NSApp.stopModal(withCode:.alertFirstButtonReturn)
     }
-    guard let picked=editor.chooseSplitLayout(count:3),picked.0 == .column,picked.1 == .fitVideos else { throw SubtitleError.invalid("Split dialog defaults failed") }
+    guard let picked=editor.chooseSplitLayout(count:3),picked.0 == .column,picked.1 == .fitVideos,picked.2 else { throw SubtitleError.invalid("Split dialog defaults failed") }
     DispatchQueue.main.asyncAfter(deadline:.now()+0.2) { NSApp.stopModal(withCode:.alertSecondButtonReturn) }
     guard editor.chooseSplitLayout(count:4) == nil else { throw SubtitleError.invalid("Split dialog cancel failed") }
     guard editor.addSplitScreen(urls,layout:.column,canvas:.portrait) else { throw SubtitleError.invalid("Split screen import failed") }
@@ -233,6 +265,55 @@ func runSplitScreenChecks(directory: URL) throws {
     let emptyEdit=directory.appendingPathComponent("e.mp4")
     var lead=Project(); lead.videoPath=emptyEdit.path; lead.duration=Int64(CMTimeGetSeconds(AVURLAsset(url:emptyEdit).duration)*1000)
     for frame in try frames(lead,at:20,name:"empty-edit") where color(frame,160,90) != "red" { throw SubtitleError.invalid("Empty leading edit rendered \(color(frame,160,90))") }
+    // End together: 2.0 s and 2.1 s videos. Added with the option, or trimmed later with the toolbar action.
+    let endEditor=EditorController(); _=endEditor.view
+    guard endEditor.addSplitScreen([urls[0],emptyEdit],layout:.row,canvas:.landscape,endTogether:true),
+          Set(endEditor.project.renderPlacements.map(\.end)).count == 1 else { throw SubtitleError.invalid("Split end-together option failed: \(endEditor.project.renderPlacements.map(\.end))") }
+    let laterEditor=EditorController(); _=laterEditor.view
+    guard laterEditor.addSplitScreen([urls[0],emptyEdit],layout:.row,canvas:.landscape),Set(laterEditor.project.renderPlacements.map(\.end)).count == 2 else { throw SubtitleError.invalid("Split without option changed lengths") }
+    let unaligned=laterEditor.project
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1))
+    laterEditor.selectedClip=nil; laterEditor.current=500
+    laterEditor.endSplitTogether()
+    guard Set(laterEditor.project.renderPlacements.map(\.end)) == [unaligned.renderPlacements.map(\.end).min()!] else { throw SubtitleError.invalid("End-together action failed") }
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1)); laterEditor.history.undo()
+    guard laterEditor.project == unaligned else { throw SubtitleError.invalid("End-together undo failed") }
+    guard laterEditor.bottom.subviews.contains(where:{ $0.identifier?.rawValue == "endTogether" }) else { throw SubtitleError.invalid("End-together button missing") }
+    let toolbarWindow=NSWindow(contentRect:NSRect(x:0,y:0,width:1140,height:760),styleMask:[.titled],backing:.buffered,defer:false)
+    toolbarWindow.contentViewController=laterEditor; laterEditor.view.layoutSubtreeIfNeeded()
+    if let bitmap=laterEditor.bottom.bitmapImageRepForCachingDisplay(in:laterEditor.bottom.bounds) {
+        laterEditor.bottom.cacheDisplay(in:laterEditor.bottom.bounds,to:bitmap)
+        try? bitmap.representation(using:.png,properties:[:])?.write(to:URL(fileURLWithPath:"/tmp/split-end-toolbar-\(InterfaceLanguage.current.rawValue).png"))
+    }
+    // Region erase on a video-track clip (not only the main track): default smart repair, one undo step.
+    let eraseEditor=EditorController(); _=eraseEditor.view
+    guard eraseEditor.addSplitScreen([urls[0],urls[1]],layout:.row,canvas:.landscape) else { throw SubtitleError.invalid("Erase split failed") }
+    let trackClip=eraseEditor.project.layers[0].clip,beforeErase=eraseEditor.project
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1))
+    // As in the app with nothing selected: the tool starts on the main (left) clip, but the box is drawn in the right cell.
+    eraseEditor.current=500
+    eraseEditor.eraseClipID=eraseEditor.project.clips[0].id; eraseEditor.overlay.eraseMode=true; eraseEditor.overlay.eraseRect=CGRect(x:0.6,y:0.1,width:0.3,height:0.1)
+    DispatchQueue.main.asyncAfter(deadline:.now()+0.2) {
+        guard let view=NSApp.modalWindow?.contentView else { return }
+        if let bitmap=view.bitmapImageRepForCachingDisplay(in:view.bounds) {
+            view.cacheDisplay(in:view.bounds,to:bitmap)
+            try? bitmap.representation(using:.png,properties:[:])?.write(to:URL(fileURLWithPath:"/tmp/erase-dialog-\(InterfaceLanguage.current.rawValue).png"))
+        }
+        NSApp.stopModal(withCode:.alertFirstButtonReturn)
+    }
+    eraseEditor.applySelectedEraseRegion()
+    guard let erased=eraseEditor.project.layers.first(where:{ $0.id == trackClip.id })?.clip.eraseRegions,erased.count == 1,erased[0].fillMode == .smart,erased[0].color == nil,
+          !eraseEditor.overlay.eraseMode else { throw SubtitleError.invalid("Track clip erase failed: \(String(describing:eraseEditor.project.layers.first?.clip.eraseRegions))") }
+    guard eraseEditor.project.clips[0].eraseRegions == nil else { throw SubtitleError.invalid("Erase region went to the main clip instead of the cell under the box") }
+    // The region renders inside that cell: a manual red fill shows in the right (blue) cell's box only.
+    var redProject=eraseEditor.project
+    if let i=redProject.videoLayers?.firstIndex(where:{ $0.id == trackClip.id }) { redProject.videoLayers?[i].clip.eraseRegions?[0].fill = .solid; redProject.videoLayers?[i].clip.eraseRegions?[0].color=RGBA(1,0,0,1) }
+    for frame in try frames(redProject,at:500,name:"cell-erase") {
+        let w=frame.width,h=frame.height
+        guard color(frame,Int(Double(w)*0.75),Int(Double(h)*0.15)) == "red",color(frame,Int(Double(w)*0.75),Int(Double(h)*0.6)) == "blue" else { throw SubtitleError.invalid("Cell erase not rendered") }
+    }
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1)); eraseEditor.history.undo()
+    guard eraseEditor.project == beforeErase else { throw SubtitleError.invalid("Track clip erase undo failed") }
     // Divider drag in the preview: mouse down on the line between the cells, drag up, release.
     let overlayWindow=NSWindow(contentRect:NSRect(x:0,y:0,width:400,height:400),styleMask:[.titled],backing:.buffered,defer:false)
     let overlay=PreviewOverlay(frame:overlayWindow.contentView!.bounds); overlayWindow.contentView!.addSubview(overlay)
@@ -294,7 +375,7 @@ func runSplitScreenChecks(directory: URL) throws {
     }
     boxedEditor.editSelectedVideo()
     guard let edited=boxedEditor.project.clips[0].crop,abs(edited.top-detected.top)<0.002,abs(edited.left-0.05)<1e-9 else { throw SubtitleError.invalid("Crop dialog failed: \(String(describing:boxedEditor.project.clips[0].crop))") }
-    print("SPLIT_SCREEN_OK column 9:16 and row 16:9 cells fill edge to edge in preview and export, main video becomes first cell, edit-dialog position/canvas changes, letterbox auto-crop and manual crop, auto canvas shows each video whole, preview divider drag, empty leading edit, undo restores")
+    print("SPLIT_SCREEN_OK column 9:16 and row 16:9 cells fill edge to edge in preview and export, main video becomes first cell, edit-dialog position/canvas changes, letterbox auto-crop and manual crop, auto canvas shows each video whole, preview divider drag, empty leading edit, end together, track-clip smart erase, undo restores")
 }
 
 func runMultiTrackChecks(directory: URL) throws {
