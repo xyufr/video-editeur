@@ -158,6 +158,23 @@ final class PreviewOverlay: NSView {
     var onEraseSelected: (()->Void)?
     var onEraseCancelled: (()->Void)?
     var hitBoxes: [(UUID,CGRect)] = []
+    /// Split-screen dividers are draggable only while paused, like subtitle selection boxes.
+    var showsDividers=true
+    var onDividerMoved: ((SplitDivider,Double)->Void)?
+    private var dividerDrag: (divider: SplitDivider,position: Double)?
+    var dividers: [SplitDivider] { showsDividers && editingEnabled && !eraseMode ? project.splitDividers(at:time) : [] }
+    /// The divider's line segment in view coordinates.
+    func dividerLine(_ d: SplitDivider,position: Double?=nil) -> (CGPoint,CGPoint) {
+        let r=videoRect,p=position ?? d.position
+        return d.vertical
+            ? (CGPoint(x:r.minX+p*r.width,y:r.minY+d.from*r.height),CGPoint(x:r.minX+p*r.width,y:r.minY+d.to*r.height))
+            : (CGPoint(x:r.minX+d.from*r.width,y:r.minY+p*r.height),CGPoint(x:r.minX+d.to*r.width,y:r.minY+p*r.height))
+    }
+    private func dividerBand(_ d: SplitDivider) -> CGRect {
+        let (a,b)=dividerLine(d)
+        return CGRect(x:min(a.x,b.x),y:min(a.y,b.y),width:abs(b.x-a.x),height:abs(b.y-a.y)).insetBy(dx:d.vertical ? -6 : 0,dy:d.vertical ? 0 : -6)
+    }
+    func divider(at location: CGPoint) -> SplitDivider? { dividers.first { dividerBand($0).contains(location) } }
     private struct Gesture {
         var id: UUID
         var style: SubtitleStyle
@@ -209,6 +226,21 @@ final class PreviewOverlay: NSView {
             }
             ctx.restoreGState()
         }
+        ctx.restoreGState(); ctx.saveGState()
+        for d in dividers {
+            let dragging=dividerDrag?.divider == d
+            let (a,b)=dividerLine(d,position:dragging ? dividerDrag!.position : nil)
+            ctx.setStrokeColor((dragging ? accent : NSColor.white.withAlphaComponent(0.55)).cgColor); ctx.setLineWidth(dragging ? 2 : 1)
+            ctx.move(to:a); ctx.addLine(to:b); ctx.strokePath()
+            // A pill-shaped grip in the middle marks the line as draggable.
+            let mid=CGPoint(x:(a.x+b.x)/2,y:(a.y+b.y)/2)
+            let grip=d.vertical ? CGRect(x:mid.x-3,y:mid.y-14,width:6,height:28) : CGRect(x:mid.x-14,y:mid.y-3,width:28,height:6)
+            ctx.setFillColor((dragging ? accent : NSColor.white).cgColor)
+            ctx.setShadow(offset:CGSize(width:0,height:-1),blur:2,color:NSColor.black.withAlphaComponent(0.5).cgColor)
+            ctx.addPath(CGPath(roundedRect:grip,cornerWidth:3,cornerHeight:3,transform:nil)); ctx.fillPath()
+            ctx.setShadow(offset:.zero,blur:0,color:nil)
+        }
+        ctx.restoreGState(); ctx.saveGState(); ctx.translateBy(x:rect.minX,y:rect.minY)
         if eraseMode,let region=eraseRect {
             let box=CGRect(x:region.minX*rect.width,y:region.minY*rect.height,width:region.width*rect.width,height:region.height*rect.height)
             ctx.setFillColor(accent.withAlphaComponent(0.13).cgColor); ctx.fill(box)
@@ -223,6 +255,7 @@ final class PreviewOverlay: NSView {
         guard editingEnabled else { return }
         let r=videoRect
         if eraseMode { addCursorRect(r,cursor:.crosshair); return }
+        for d in dividers { addCursorRect(dividerBand(d),cursor:d.vertical ? .resizeLeftRight : .resizeUpDown) }
         for (_,box) in hitBoxes { addCursorRect(box.offsetBy(dx:r.minX,dy:r.minY),cursor:.openHand) }
         if let hit=hitBoxes.first(where:{$0.0 == selected}) {
             let band=min(6,(hit.1.height+8)/4)
@@ -241,6 +274,8 @@ final class PreviewOverlay: NSView {
         }
         let selectedHit=hitBoxes.first(where:{$0.0 == selected})
         let target=selectedHit.flatMap { resizeTarget(at:point,box:$0.1) }
+        // The selected subtitle's handles win; otherwise a divider takes the click before subtitle text.
+        if target == nil,let d=divider(at:location) { dividerDrag=(d,d.position); needsDisplay=true; return }
         let widthEdge=target?.edge
         let onHandle=target?.corner ?? false
         let hit=(onHandle || widthEdge != nil) ? selectedHit : hitBoxes.reversed().first(where:{$0.1.insetBy(dx:-6,dy:-6).contains(point)})
@@ -254,6 +289,12 @@ final class PreviewOverlay: NSView {
             guard r.width>0,r.height>0 else { return }
             let x=max(0,min(1,(location.x-r.minX)/r.width)),y=max(0,min(1,(location.y-r.minY)/r.height))
             eraseRect=CGRect(x:min(anchor.x,x),y:min(anchor.y,y),width:abs(anchor.x-x),height:abs(anchor.y-y)); needsDisplay=true; return
+        }
+        if let drag=dividerDrag {
+            let location=convert(event.locationInWindow,from:nil),r=videoRect
+            guard r.width>0,r.height>0 else { return }
+            let value=drag.divider.vertical ? (location.x-r.minX)/r.width : (location.y-r.minY)/r.height
+            dividerDrag=(drag.divider,max(0,min(1,Double(value)))); needsDisplay=true; return
         }
         guard editingEnabled,var g=gesture, let cue=project.cues.first(where:{$0.id == g.id}) else { return }
         let location=convert(event.locationInWindow,from:nil),r=videoRect
@@ -281,11 +322,17 @@ final class PreviewOverlay: NSView {
             if let box=eraseRect,box.width*videoRect.width>=3,box.height*videoRect.height>=3 { onEraseSelected?() } else { eraseRect=nil }
             needsDisplay=true; return
         }
+        if dividerDrag != nil {
+            mouseDragged(with:event)
+            if let drag=dividerDrag,abs(drag.position-drag.divider.position)>0.001 { onDividerMoved?(drag.divider,drag.position) }
+            dividerDrag=nil; needsDisplay=true; window?.invalidateCursorRects(for:self); return
+        }
         if let g=gesture,g.changed,let cue=project.cues.first(where:{$0.id == g.id}) { onStyleChange?(g.id,project.style(for:cue),true) }
         gesture=nil; window?.invalidateCursorRects(for:self)
     }
     override func cancelOperation(_ sender: Any?) {
         if eraseMode { eraseAnchor=nil; eraseRect=nil; eraseMode=false; onEraseCancelled?(); needsDisplay=true; return }
+        if dividerDrag != nil { dividerDrag=nil; needsDisplay=true; return }
         if gesture?.changed == true { onGestureCancelled?() }; gesture=nil; needsDisplay=true
     }
 

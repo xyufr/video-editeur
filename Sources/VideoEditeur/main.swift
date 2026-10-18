@@ -102,9 +102,26 @@ if CommandLine.arguments.contains("--check-local-library") {
 } else if CommandLine.arguments.count >= 4,CommandLine.arguments[1] == "--smoke-erase" {
     _=NSApplication.shared
     do { try runRegionEraseChecks(source:URL(fileURLWithPath:CommandLine.arguments[2]),destination:URL(fileURLWithPath:CommandLine.arguments[3])) } catch { fputs("\(error)\n",stderr); exit(1) }
+ } else if CommandLine.arguments.count >= 3,CommandLine.arguments[1] == "--detect-borders" {
+    // Prints the letterbox crop the split screen would apply, as top/bottom/left/right percentages.
+    for path in CommandLine.arguments.dropFirst(2) {
+        let crop=BlackBorderDetector.detect(path:path) ?? VideoCrop()
+        print(String(format:"%@ top %.1f%% bottom %.1f%% left %.1f%% right %.1f%%",path,crop.top*100,crop.bottom*100,crop.left*100,crop.right*100))
+    }
+    exit(0)
+ } else if CommandLine.arguments.count >= 4,CommandLine.arguments[1] == "--smoke-split" {
+    // --smoke-split out.mp4 video1 [video2 …]: one-column split screen with the default Auto canvas and letterbox detection, exported.
+    _=NSApplication.shared
+    do {
+        let editor=EditorController(); _=editor.view
+        guard editor.addSplitScreen(CommandLine.arguments.dropFirst(3).map { URL(fileURLWithPath:$0) },layout:.column,canvas:.fitVideos) else { throw SubtitleError.invalid("Split screen failed") }
+        for clip in editor.project.allClips { print(URL(fileURLWithPath:clip.path).lastPathComponent,String(describing:clip.crop)) }
+        try VideoExporter().run(project:editor.project,destination:URL(fileURLWithPath:CommandLine.arguments[2])) { _ in }
+        print("SPLIT_EXPORT_OK \(CommandLine.arguments[2])"); exit(0)
+    } catch { fputs("\(error)\n",stderr); exit(1) }
  } else if CommandLine.arguments.count >= 3,CommandLine.arguments[1] == "--smoke-multitrack" {
     _=NSApplication.shared
-    do { try runMultiTrackChecks(directory:URL(fileURLWithPath:CommandLine.arguments[2])) } catch { fputs("\(error)\n",stderr); exit(1) }
+    do { try runSplitScreenChecks(directory:URL(fileURLWithPath:CommandLine.arguments[2])); try runMultiTrackChecks(directory:URL(fileURLWithPath:CommandLine.arguments[2])) } catch { fputs("\(error)\n",stderr); exit(1) }
 } else if CommandLine.arguments.count >= 3,CommandLine.arguments[1] == "--smoke-editing" {
     _=NSApplication.shared
     do { try runEditingChecks(directory:URL(fileURLWithPath:CommandLine.arguments[2])) } catch { fputs("\(error)\n",stderr); exit(1) }

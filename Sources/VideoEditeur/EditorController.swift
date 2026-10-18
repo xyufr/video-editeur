@@ -64,6 +64,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     var inspectorPositioned=false
     let mediaGrid=MediaGridView(), mediaSearch=NSSearchField()
     var mediaImportButton: NSButton!
+    var splitScreenButton: NSButton!
     struct LibraryEntry {
         let title: String
         let detail: String
@@ -130,7 +131,9 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         mediaImportButton.imagePosition = .imageOnly
         mediaImportButton.toolTip=L("导入")
         mediaImportButton.setAccessibilityLabel(L("导入"))
-        left.addSubview(mediaImportButton); left.addSubview(mediaSearch)
+        splitScreenButton=ActionButton("",symbol:"rectangle.split.3x1",action:{[weak self] in self?.chooseSplitScreen()})
+        splitScreenButton.imagePosition = .imageOnly; splitScreenButton.toolTip=L("分屏：同时添加 1–4 个视频"); splitScreenButton.setAccessibilityLabel(L("分屏"))
+        left.addSubview(mediaImportButton); left.addSubview(splitScreenButton); left.addSubview(mediaSearch)
         mediaSearch.placeholderString=L("搜索文件名"); mediaSearch.target=self; mediaSearch.action=#selector(mediaSearchChanged(_:))
         mediaSearch.sendsSearchStringImmediately=true
         mediaGrid.canDrop={[weak self] urls in
@@ -223,6 +226,10 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         overlay.onSelect={[weak self] in self?.pauseForEditing(); self?.select($0,seek:false)}
         overlay.onGestureBegan={[weak self] in self?.styleDragOriginal=self?.project }
         overlay.onStyleChange={[weak self] id,style,finished in self?.previewTrackStyle(id:id,style:style,finished:finished) }
+        overlay.onDividerMoved={[weak self] divider,position in
+            guard let self,!self.busy else { return }; self.pauseForEditing()
+            do { self.commit(try self.project.movingSplitDivider(divider,to:position),name:L("调整分屏比例")) } catch { self.showError(error) }
+        }
         overlay.onGestureCancelled={[weak self] in
             guard let self,let original=self.styleDragOriginal else { return }
             self.styleDragOriginal=nil; self.project=original; self.refresh(); self.refreshInspector()
@@ -357,7 +364,8 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         fileLabel.frame=NSRect(x:16,y:paneH-65,width:leftW-32,height:21); fileLabel.lineBreakMode = .byTruncatingMiddle
         tableScroll.frame=NSRect(x:8,y:showsGrid ? 53 : 85,width:leftW-16,height:paneH-(showsGrid ? 127 : 159))
         mediaImportButton.frame=NSRect(x:12,y:paneH-64,width:30,height:26)
-        mediaSearch.frame=NSRect(x:48,y:paneH-64,width:leftW-60,height:26)
+        splitScreenButton.frame=NSRect(x:46,y:paneH-64,width:30,height:26)
+        mediaSearch.frame=NSRect(x:82,y:paneH-64,width:leftW-94,height:26)
         tableScroll.tile()
         if showsGrid { mediaGrid.arrange(width:tableScroll.contentSize.width,minimumHeight:tableScroll.contentSize.height) }
         table.tableColumns.first?.width=max(1,tableScroll.contentSize.width)
@@ -533,7 +541,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         if let id=selectedClip,!project.allClips.contains(where:{$0.id == id}) { selectedClip=nil }
         let document: NSView=showsGrid ? mediaGrid : table
         if tableScroll.documentView !== document { tableScroll.documentView=document }
-        fileLabel.isHidden=showsGrid; mediaSearch.isHidden = !showsGrid; mediaImportButton.isHidden = !showsGrid
+        fileLabel.isHidden=showsGrid; mediaSearch.isHidden = !showsGrid; mediaImportButton.isHidden = !showsGrid; splitScreenButton.isHidden = !showsGrid
         mediaImportButton.toolTip=showsLocalLibrary ? L("选择素材库目录") : L("导入")
         mediaImportButton.isEnabled = !busy; mediaSearch.isEnabled = !busy
         left.subviews.first{$0.identifier?.rawValue == "add"}?.isHidden=showsGrid
@@ -552,7 +560,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         (center.subviews.first{$0.identifier?.rawValue == "regionErase"} as? NSButton)?.isEnabled = !busy && !project.allClips.isEmpty
         refreshRegionEraseButton()
         overlay.editingEnabled = !busy; timeline.editingEnabled = !busy
-        overlay.project=project; overlay.selected=player.rate == 0 ? selected : nil; overlay.time=current; overlay.needsDisplay=true
+        overlay.project=project; overlay.selected=player.rate == 0 ? selected : nil; overlay.showsDividers=player.rate == 0; overlay.time=current; overlay.needsDisplay=true
         let chosen=textTrackChoice.selectedItem?.representedObject as? UUID
         textTrackChoice.removeAllItems()
         for track in project.tracks {
@@ -589,7 +597,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
             overlay.selected=previewSelection
             overlay.window?.invalidateCursorRects(for:overlay)
         }
-        scrub.doubleValue=Double(current); overlay.time=current; overlay.needsDisplay=true; timeline.current=current; timeline.needsDisplay=true
+        scrub.doubleValue=Double(current); overlay.time=current; overlay.showsDividers=player.rate == 0; overlay.needsDisplay=true; timeline.current=current; timeline.needsDisplay=true
     }
     func refreshInspector() {
         inspectorUpdating=true; defer { inspectorUpdating=false }

@@ -44,7 +44,7 @@ extension Project {
     }
     public func addingLayer(from id: UUID,at time: Int64,trackID: UUID?=nil) throws -> Project {
         guard var clip=allClips.first(where:{$0.id == id}),time>=0,time<1_000_000_000 else { throw SubtitleError.invalid(L("素材或插入位置无效")) }
-        clip.id=UUID(); clip.transition=0; clip.timelineGap=nil
+        clip.id=UUID(); clip.transition=0; clip.timelineGap=nil; clip.frame=nil
         var value=VideoLayer(clip:clip,start:time)
         if let trackID {
             guard let track=layers.first(where:{$0.trackIdentifier == trackID}),!track.isLocked else { throw SubtitleError.invalid(L("视频轨道已锁定，请先解锁")) }
@@ -58,7 +58,7 @@ extension Project {
         guard let first=clips.first,time>=0,time<1_000_000_000 else { throw SubtitleError.invalid(L("素材或插入位置无效")) }
         var start=time
         let values=clips.map { source -> VideoLayer in
-            var clip=source; clip.transition=0; clip.timelineGap=nil
+            var clip=source; clip.transition=0; clip.timelineGap=nil; clip.frame=nil
             var value=VideoLayer(clip:clip,start:start); value.trackID=first.id; start+=clip.duration
             return value
         }

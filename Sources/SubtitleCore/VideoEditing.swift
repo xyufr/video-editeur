@@ -36,6 +36,10 @@ public struct VideoClip: Codable, Equatable, Identifiable {
     public var transition: Int64 = 0
     public var effects = ClipEffects()
     public var eraseRegions: [VideoEraseRegion]?
+    /// Split-screen cell; nil fills the whole canvas as before.
+    public var frame: VideoFrame?
+    /// Cut-away edges of the source picture; nil keeps the whole picture.
+    public var crop: VideoCrop?
     public var duration: Int64 { sourceEnd-sourceStart }
     public init(id: UUID = UUID(), path: String, duration: Int64) {
         self.id=id; self.path=path; sourceDuration=duration; sourceStart=0; sourceEnd=duration
@@ -71,6 +75,8 @@ extension Project {
                       region.sourceStart>=0,region.sourceEnd>region.sourceStart,region.sourceEnd<=c.sourceDuration else { throw SubtitleError.invalid(L("去字区域或生效时间无效")) }
                 if let color=region.color,!([color.r,color.g,color.b,color.a].allSatisfy{$0.isFinite && (0...1).contains($0)}) { throw SubtitleError.invalid(L("去字背景颜色无效")) }
             }
+            guard c.frame?.isValid ?? true else { throw SubtitleError.invalid(L("分屏画面位置无效")) }
+            guard c.crop?.isValid ?? true else { throw SubtitleError.invalid(L("裁切范围无效：每边 0–45%，上下或左右合计不超过 90%")) }
             let e=c.effects
             guard c.gap>=0,c.gap<1_000_000_000,(c.transition == 0 || c.gap == 0),!c.path.isEmpty,c.sourceDuration>0,c.sourceStart>=0,c.sourceEnd<=c.sourceDuration,c.duration>0,
                   c.transition>=0,c.transition <= c.duration/2,

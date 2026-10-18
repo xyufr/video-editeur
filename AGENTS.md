@@ -66,6 +66,8 @@ open dist/VideoEditeur.app
 
 - 附加视频轨道通过可选 `trackID` 分组，缺省以片段 ID 作为独立轨道，兼容旧工程。分割保留 trackID，同轨片段不可重叠；锁定/隐藏/静音在组内一致。普通视频按全画布适配并覆盖下方，旧 PiP 几何字段只保留文件兼容性，不再渲染。
 
+- 分屏：片段可选 `frame`（归一化格子，Y 向上，nil 为全画布适配），按格子填满裁切；工程可选 `canvasAspect`（nil 沿用首个视频尺寸；`fitVideos` 配合可选 `canvasRatio`，格子按视频比例完整显示，为分屏默认）。预览与导出共用 `EditedAsset`/`EditCompositor`。分割保留 frame，从素材再次添加时清除。可选 `crop` 为源画面四边裁切比例（先裁后适配/填满），分屏加入时由 BlackBorderDetector 检测录入的黑边。预览暂停时可拖动相邻格子间的分隔线（`splitDividers`/`movingSplitDivider`，同轨同格的分割片段一起移动）。
+
 - 主视频片段可用兼容可选 `timelineGap` 保存前置空档，旧工程默认零。拖动主体按绝对时间移动，保持其他片段/音乐位置并重映射关联字幕；分割的第二段和素材副本必须清除继承的 gap，避免重复空档。
 
 - 字幕生成源语言支持 fr/en，目标支持 zh/en/fr，默认 fr→zh；同语言仅转写。generationLanguages、英语样式及显示状态使用可选字段兼容旧工程。任务缓存按 languages.json 校验，不跨语言复用；多语言 skill 源码位于 Assets/Skills/video-generate-multilingual-subtitles，打包至 Resources/SubtitleSkill。

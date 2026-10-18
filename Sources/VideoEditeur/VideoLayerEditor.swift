@@ -27,10 +27,15 @@ extension EditorController {
         commit(next,name:[L("锁定视频轨道"),L("隐藏视频轨道"),L("静音原视频")][control])
     }
     var targetLayer: VideoLayer? { project.layers.first{$0.id == selectedClip} }
-    func updateVideoLayer(_ layer: VideoLayer) {
+    /// `canvas` also changes the project-wide frame shape in the same undo step.
+    func updateVideoLayer(_ layer: VideoLayer,canvas: CanvasAspect?=nil,original: VideoLayer?=nil) {
         guard !busy,let i=project.layers.firstIndex(where:{$0.id == layer.id}),!project.layers[i].isLocked else { return }
         pauseForEditing()
-        do { commit(try project.replacingLayer(layer),name:L("编辑视频轨道")); refresh() } catch { showError(error); refresh() }
+        do {
+            var next=try project.replacingLayer(layer)
+            if let canvas { try applyCanvas(canvas,to:&next,clip:layer.clip,original:(original ?? layer).clip) }
+            commit(next,name:L("编辑视频轨道")); refresh()
+        } catch { showError(error); refresh() }
     }
     func editVideoLayer(_ original: VideoLayer) {
         guard !original.isLocked else { return }; pauseForEditing()
@@ -43,14 +48,16 @@ extension EditorController {
             let field=NSTextField(string:String(format:"%.3f",value.1)); field.frame=NSRect(x:190,y:268-i*36,width:210,height:24)
             field.setAccessibilityLabel(value.0); form.addSubview(field); fields.append(field)
         }
+        let frameControls=FrameControls(adding:form,clip:original.clip,canvas:project.canvas)
         alert.accessoryView=form; alert.addButton(withTitle:L("应用")); alert.addButton(withTitle:L("取消"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let n=fields.compactMap{Double($0.stringValue)}
-        guard n.count==8,n.allSatisfy({$0.isFinite && abs($0)<1e6}) else { showError(SubtitleError.invalid(L("请输入有效数值"))); return }
+        guard n.count==8,n.allSatisfy({$0.isFinite && abs($0)<1e6}),let crop=frameControls.selectedCrop else { showError(SubtitleError.invalid(L("请输入有效数值"))); return }
         var layer=original; layer.start=Int64(n[0]*1000); layer.clip.sourceStart=Int64(n[1]*1000); layer.clip.sourceEnd=Int64(n[2]*1000)
         layer.clip.effects.fadeIn=Int64(n[3]*1000); layer.clip.effects.fadeOut=Int64(n[4]*1000)
         layer.clip.effects.brightness=n[5]; layer.clip.effects.contrast=n[6]; layer.clip.effects.saturation=n[7]
-        updateVideoLayer(layer)
+        layer.clip.frame=frameControls.selectedFrame; layer.clip.crop=crop
+        updateVideoLayer(layer,canvas:frameControls.selectedCanvas,original:original)
     }
     func cutVideoLayer(_ layer: VideoLayer,removeBefore: Bool?=nil) {
         guard !busy,!layer.isLocked else { return }; pauseForEditing()

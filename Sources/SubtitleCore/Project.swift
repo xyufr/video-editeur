@@ -78,6 +78,10 @@ public struct Project: Codable, Equatable {
     public var isVideoHidden: Bool { hideVideoTrack ?? false }
     public var videoClips: [VideoClip]?
     public var videoLayers: [VideoLayer]?
+    /// nil keeps the first video's frame size (legacy projects).
+    public var canvasAspect: CanvasAspect?
+    /// Width / height for `CanvasAspect.fitVideos`.
+    public var canvasRatio: Double?
     public var textTracks: [TextTrack]?
     public var tracks: [TextTrack] { textTracks ?? [] }
     public var version = 1
@@ -141,6 +145,7 @@ public struct Project: Codable, Equatable {
     public func validate() throws {
         guard speed.isFinite,(0.25...2).contains(speed) else { throw SubtitleError.invalid(L("播放速度必须在 0.25 到 2 倍之间")) }
         try validateMusic()
+        guard isCanvasRatioValid else { throw SubtitleError.invalid(L("分屏画面位置无效")) }
         try validateClips()
         try validateLayers()
         guard version == 1 else { throw SubtitleError.invalid(L("不支持的工程版本：{0}", [String(describing: version)])) }

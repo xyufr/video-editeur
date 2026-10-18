@@ -147,6 +147,156 @@ func runMusicChecks(directory: URL) throws {
     print("PASS music preview mix, clipped duration, original audio mute and both exports")
 }
 
+/// Colored fixtures a (red), b (blue), c (green): each cell must show its own video edge to edge, in preview and export.
+func runSplitScreenChecks(directory: URL) throws {
+    let urls=["a","b","c"].map { directory.appendingPathComponent($0+".mp4") }
+    func color(_ frame: CGImage,_ x: Int,_ y: Int) -> String {
+        var bytes=[UInt8](repeating:0,count:4)
+        CIContext().render(CIImage(cgImage:frame),toBitmap:&bytes,rowBytes:4,bounds:CGRect(x:x,y:y,width:1,height:1),format:.RGBA8,colorSpace:CGColorSpace(name:CGColorSpace.sRGB))
+        let (r,g,b)=(Int(bytes[0]),Int(bytes[1]),Int(bytes[2]))
+        return r>150 && g<90 && b<90 ? "red" : b>150 && r<90 ? "blue" : g>90 && r<90 && b<90 ? "green" : "other(\(r),\(g),\(b))"
+    }
+    func frames(_ project: Project,at ms: Int64,name: String) throws -> [CGImage] {
+        let preview=try EditedAsset(project:project,color:.sdr,subtitles:false)
+        let generator=AVAssetImageGenerator(asset:preview.asset); generator.videoComposition=preview.video
+        generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+        let output=directory.appendingPathComponent(name+".mp4")
+        try VideoExporter().run(project:project,destination:output) {_ in}
+        let exported=AVAssetImageGenerator(asset:AVURLAsset(url:output))
+        exported.requestedTimeToleranceBefore = .zero; exported.requestedTimeToleranceAfter = .zero
+        return [try generator.copyCGImage(at:CMTime(value:ms,timescale:1000),actualTime:nil),try exported.copyCGImage(at:CMTime(value:ms,timescale:1000),actualTime:nil)]
+    }
+    let editor=EditorController(); _=editor.view
+    DispatchQueue.main.asyncAfter(deadline:.now()+0.2) {
+        if let view=NSApp.modalWindow?.contentView, let bitmap=view.bitmapImageRepForCachingDisplay(in:view.bounds) {
+            view.cacheDisplay(in:view.bounds,to:bitmap)
+            try? bitmap.representation(using:.png,properties:[:])?.write(to:URL(fileURLWithPath:"/tmp/split-screen-dialog-\(InterfaceLanguage.current.rawValue).png"))
+        }
+        NSApp.stopModal(withCode:.alertFirstButtonReturn)
+    }
+    guard let picked=editor.chooseSplitLayout(count:3),picked.0 == .column,picked.1 == .fitVideos else { throw SubtitleError.invalid("Split dialog defaults failed") }
+    DispatchQueue.main.asyncAfter(deadline:.now()+0.2) { NSApp.stopModal(withCode:.alertSecondButtonReturn) }
+    guard editor.chooseSplitLayout(count:4) == nil else { throw SubtitleError.invalid("Split dialog cancel failed") }
+    guard editor.addSplitScreen(urls,layout:.column,canvas:.portrait) else { throw SubtitleError.invalid("Split screen import failed") }
+    let column=editor.project
+    guard column.clips.count == 1,column.layerTracks.count == 2,column.canvas == .portrait else { throw SubtitleError.invalid("Split screen tracks wrong") }
+    for frame in try frames(column,at:1000,name:"split-column") {
+        guard frame.width == 180,frame.height == 320 else { throw SubtitleError.invalid("Portrait canvas size \(frame.width)x\(frame.height)") }
+        // CGImage rows start at the bottom here: top cell is the first video.
+        let cells=[(318,"red"),(270,"red"),(216,"red"),(210,"blue"),(160,"blue"),(110,"blue"),(104,"green"),(50,"green"),(2,"green")]
+        for (y,expected) in cells { for x in [2,90,177] where color(frame,x,y) != expected { throw SubtitleError.invalid("Column cell at \(x),\(y) is \(color(frame,x,y)), expected \(expected)") } }
+    }
+    // Edit dialogs: move a track clip to the 2 × 2 bottom-right cell and switch the canvas, then return the main clip to full canvas.
+    func popups(_ view: NSView) -> [NSPopUpButton] { (view as? NSPopUpButton).map { [$0] } ?? view.subviews.flatMap(popups) }
+    func runDialog(snapshot: String?,position: String,canvas: String,_ open: () -> Void) {
+        DispatchQueue.main.asyncAfter(deadline:.now()+0.2) {
+            guard let view=NSApp.modalWindow?.contentView else { return }
+            if let snapshot, let bitmap=view.bitmapImageRepForCachingDisplay(in:view.bounds) {
+                view.cacheDisplay(in:view.bounds,to:bitmap)
+                try? bitmap.representation(using:.png,properties:[:])?.write(to:URL(fileURLWithPath:"/tmp/\(snapshot)-\(InterfaceLanguage.current.rawValue).png"))
+            }
+            for popup in popups(view) {
+                if popup.accessibilityLabel() == L("画面位置") { popup.selectItem(withTitle:position) }
+                if popup.accessibilityLabel() == L("画布（整个工程）") { popup.selectItem(withTitle:canvas) }
+            }
+            NSApp.stopModal(withCode:.alertFirstButtonReturn)
+        }
+        open()
+    }
+    let topLayer=column.layers.first { $0.clip.frame == SplitLayout.column.cells(3)[1] }!
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1))
+    runDialog(snapshot:"split-position-dialog",position:L("2 × 2 · 右下"),canvas:CanvasAspect.square.title) { editor.editVideoLayer(topLayer) }
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1))
+    guard editor.project.layers.first(where:{ $0.id == topLayer.id })?.clip.frame == SplitLayout.grid.cells(4)[3],editor.project.canvas == .square else { throw SubtitleError.invalid("Track clip position/canvas edit failed") }
+    editor.selectedClip=editor.project.clips[0].id; editor.timeline.selectedClip=editor.selectedClip
+    runDialog(snapshot:nil,position:L("全画布"),canvas:CanvasAspect.source.title) { editor.editSelectedVideo() }
+    guard editor.project.clips[0].frame == nil,editor.project.canvasAspect == nil else { throw SubtitleError.invalid("Main clip position/canvas edit failed") }
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1)); editor.history.undo(); editor.history.undo()
+    guard editor.project == column else { throw SubtitleError.invalid("Position edits must undo step by step: canvas \(String(describing:editor.project.canvasAspect)) frames \(editor.project.allClips.map { $0.frame.map { "\($0.x),\($0.y),\($0.width)" } ?? "nil" }) layers \(editor.project.layers.count) vs \(column.layers.count)") }
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1)); editor.history.undo()
+    guard editor.project.allClips.isEmpty,editor.project.canvasAspect == nil else { throw SubtitleError.invalid("Split screen undo failed") }
+    var base=try Project().replacingClips([VideoClip(path:urls[2].path,duration:2000)])
+    base=try base.addingSplitScreen(urls.prefix(2).map { VideoClip(path:$0.path,duration:2000) },layout:.row,canvas:.landscape,at:500)
+    for frame in try frames(base,at:1000,name:"split-row") {
+        for (x,expected) in [(2,"red"),(80,"red"),(158,"red"),(162,"blue"),(240,"blue"),(317,"blue")] where color(frame,x,90) != expected { throw SubtitleError.invalid("Row cell at \(x) is \(color(frame,x,90)), expected \(expected)") }
+    }
+    // Letterboxed source: bars are detected and cropped so the cell is red to its edges.
+    let boxed=directory.appendingPathComponent("d.mp4")
+    guard let detected=BlackBorderDetector.detect(path:boxed.path),abs(detected.top-20.0/180)<0.03,abs(detected.bottom-20.0/180)<0.03,detected.left == 0,detected.right == 0 else { throw SubtitleError.invalid("Letterbox detection failed: \(String(describing:BlackBorderDetector.detect(path:boxed.path)))") }
+    guard BlackBorderDetector.detect(path:urls[0].path) == nil else { throw SubtitleError.invalid("Borderless video reported bars") }
+    let boxedEditor=EditorController(); _=boxedEditor.view
+    guard boxedEditor.addSplitScreen([boxed,urls[1]],layout:.column,canvas:.portrait) else { throw SubtitleError.invalid("Letterboxed split failed") }
+    for frame in try frames(boxedEditor.project,at:1000,name:"split-letterbox") {
+        for (y,expected) in [(318,"red"),(240,"red"),(162,"red"),(158,"blue"),(2,"blue")] { for x in [2,90,177] where color(frame,x,y) != expected { throw SubtitleError.invalid("Letterboxed cell at \(x),\(y) is \(color(frame,x,y)), expected \(expected)") } }
+    }
+    // A source whose edit list starts with an empty segment must render its first frame there, in preview and export.
+    let emptyEdit=directory.appendingPathComponent("e.mp4")
+    var lead=Project(); lead.videoPath=emptyEdit.path; lead.duration=Int64(CMTimeGetSeconds(AVURLAsset(url:emptyEdit).duration)*1000)
+    for frame in try frames(lead,at:20,name:"empty-edit") where color(frame,160,90) != "red" { throw SubtitleError.invalid("Empty leading edit rendered \(color(frame,160,90))") }
+    // Divider drag in the preview: mouse down on the line between the cells, drag up, release.
+    let overlayWindow=NSWindow(contentRect:NSRect(x:0,y:0,width:400,height:400),styleMask:[.titled],backing:.buffered,defer:false)
+    let overlay=PreviewOverlay(frame:overlayWindow.contentView!.bounds); overlayWindow.contentView!.addSubview(overlay)
+    var split=try Project().addingSplitScreen((0..<2).map { _ in VideoClip(path:urls[0].path,duration:2000) },layout:.column,canvas:.portrait,at:0)
+    overlay.project=split; overlay.videoSize=CGSize(width:180,height:320); overlay.time=500
+    var moved: (SplitDivider,Double)?
+    overlay.onDividerMoved={ moved=($0,$1) }
+    func mouse(_ type: NSEvent.EventType,_ point: CGPoint) -> NSEvent { NSEvent.mouseEvent(with:type,location:overlay.convert(point,to:nil),modifierFlags:[],timestamp:0,windowNumber:overlayWindow.windowNumber,context:nil,eventNumber:0,clickCount:1,pressure:1)! }
+    let r=overlay.videoRect,start=CGPoint(x:r.midX+30,y:r.midY+2),end=CGPoint(x:r.midX+30,y:r.minY+r.height*0.7)
+    guard overlay.divider(at:start) != nil,overlay.divider(at:CGPoint(x:r.midX,y:r.midY+40)) == nil else { throw SubtitleError.invalid("Divider hit area wrong") }
+    overlay.mouseDown(with:mouse(.leftMouseDown,start)); overlay.mouseDragged(with:mouse(.leftMouseDragged,end)); overlay.mouseUp(with:mouse(.leftMouseUp,end))
+    guard let (divider,position)=moved,abs(position-0.7)<0.01 else { throw SubtitleError.invalid("Divider drag not reported: \(String(describing:moved))") }
+    split=try split.movingSplitDivider(divider,to:position)
+    guard let top=split.clips[0].frame,abs(top.y-0.7)<0.01,abs(top.height-0.3)<0.01 else { throw SubtitleError.invalid("Divider move result wrong") }
+    overlay.project=split; overlay.wantsLayer=true; overlay.layer?.backgroundColor=NSColor.darkGray.cgColor
+    if let bitmap=overlay.bitmapImageRepForCachingDisplay(in:overlay.bounds) {
+        overlay.cacheDisplay(in:overlay.bounds,to:bitmap)
+        try? bitmap.representation(using:.png,properties:[:])?.write(to:URL(fileURLWithPath:"/tmp/split-divider-preview.png"))
+    }
+    overlay.showsDividers=false; moved=nil
+    overlay.mouseDown(with:mouse(.leftMouseDown,start)); overlay.mouseUp(with:mouse(.leftMouseUp,end))
+    guard moved == nil,overlay.dividers.isEmpty else { throw SubtitleError.invalid("Dividers must not move during playback") }
+    // Through the editor: one undo step.
+    let dividerEditor=EditorController(); _=dividerEditor.view
+    dividerEditor.project=try Project().addingSplitScreen((0..<2).map { _ in VideoClip(path:urls[0].path,duration:2000) },layout:.row,canvas:.landscape,at:0)
+    let beforeMove=dividerEditor.project
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1))
+    dividerEditor.overlay.onDividerMoved?(beforeMove.splitDividers(at:0)[0],0.35)
+    guard abs((dividerEditor.project.clips[0].frame?.width ?? 0)-0.35)<1e-9 else { throw SubtitleError.invalid("Editor divider commit failed") }
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1)); dividerEditor.history.undo()
+    guard dividerEditor.project == beforeMove else { throw SubtitleError.invalid("Divider move undo failed") }
+    // Auto canvas: a 16:9 video over the letterboxed one (picture 320×140 after crop) — both whole, no bars.
+    let fitEditor=EditorController(); _=fitEditor.view
+    guard fitEditor.addSplitScreen([urls[1],boxed],layout:.column,canvas:.fitVideos),let fitRatio=fitEditor.project.canvasRatio else { throw SubtitleError.invalid("Auto canvas split failed") }
+    let boxedAspect=try shownAspect(fitEditor.project.layers[0].clip)
+    guard abs(fitRatio-1/(9.0/16+1/boxedAspect))<1e-6 else { throw SubtitleError.invalid("Auto canvas ratio \(fitRatio)") }
+    for frame in try frames(fitEditor.project,at:1000,name:"split-fit") {
+        let w=frame.width,h=frame.height,split=Int(Double(h)*(1/boxedAspect)/(9.0/16+1/boxedAspect))
+        guard abs(Double(w)/Double(h)-fitRatio)<0.02 else { throw SubtitleError.invalid("Auto canvas size \(w)x\(h)") }
+        for (y,expected) in [(h-2,"blue"),(split+3,"blue"),(split-3,"red"),(1,"red")] { for x in [1,w/2,w-2] where color(frame,x,y) != expected { throw SubtitleError.invalid("Auto canvas cell at \(x),\(y) is \(color(frame,x,y)), expected \(expected)") } }
+    }
+    // Manual adjustment: the dialog's Auto button refills the fields after they were cleared.
+    func fields(_ view: NSView) -> [NSTextField] { (view as? NSTextField).map { $0.isEditable ? [$0] : [] } ?? view.subviews.flatMap(fields) }
+    func buttons(_ view: NSView) -> [ActionButton] { (view as? ActionButton).map { [$0] } ?? view.subviews.flatMap(buttons) }
+    let boxedClip=boxedEditor.project.clips[0]
+    boxedEditor.selectedClip=boxedClip.id; boxedEditor.timeline.selectedClip=boxedClip.id
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1))
+    DispatchQueue.main.asyncAfter(deadline:.now()+0.2) {
+        guard let view=NSApp.modalWindow?.contentView else { return }
+        let crops=fields(view).filter { $0.accessibilityLabel()?.hasPrefix(L("裁切")) == true }
+        crops.forEach { $0.stringValue="0" }
+        buttons(view).first { $0.title == L("自动") }?.performClick(nil)
+        if let bitmap=view.bitmapImageRepForCachingDisplay(in:view.bounds) {
+            view.cacheDisplay(in:view.bounds,to:bitmap)
+            try? bitmap.representation(using:.png,properties:[:])?.write(to:URL(fileURLWithPath:"/tmp/split-crop-dialog-\(InterfaceLanguage.current.rawValue).png"))
+        }
+        crops[2].stringValue="5"
+        NSApp.stopModal(withCode:.alertFirstButtonReturn)
+    }
+    boxedEditor.editSelectedVideo()
+    guard let edited=boxedEditor.project.clips[0].crop,abs(edited.top-detected.top)<0.002,abs(edited.left-0.05)<1e-9 else { throw SubtitleError.invalid("Crop dialog failed: \(String(describing:boxedEditor.project.clips[0].crop))") }
+    print("SPLIT_SCREEN_OK column 9:16 and row 16:9 cells fill edge to edge in preview and export, main video becomes first cell, edit-dialog position/canvas changes, letterbox auto-crop and manual crop, auto canvas shows each video whole, preview divider drag, empty leading edit, undo restores")
+}
+
 func runMultiTrackChecks(directory: URL) throws {
     let a=directory.appendingPathComponent("a.mp4"),b=directory.appendingPathComponent("b.mp4")
     var p=try Project().replacingClips([VideoClip(path:a.path,duration:2000)])

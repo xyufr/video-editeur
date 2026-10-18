@@ -410,6 +410,97 @@ check("PiP stacking and project persistence preserve independent position and vi
     try restored.validate()
     return restored==r && restored.renderPlacements.last?.clip.id==r.layers[0].id && p.layers.isEmpty
 }
+check("Split layouts give non-overlapping cells in reading order") {
+    let column=SplitLayout.column.cells(3), row=SplitLayout.row.cells(3), grid=SplitLayout.grid.cells(4)
+    guard SplitLayout.grid.cells(3).isEmpty, SplitLayout.row.cells(5).isEmpty, SplitLayout.column.cells(1).first == VideoFrame(x:0,y:0,width:1,height:1) else { return false }
+    // Column: the first video is on top (Y grows upward); row: the first is on the left.
+    guard column.map(\.y) == column.map(\.y).sorted(by:>), abs(column[0].y-2.0/3) < 1e-9, row.map(\.x) == row.map(\.x).sorted(), abs(row[2].x-2.0/3) < 1e-9 else { return false }
+    guard grid[0] == VideoFrame(x:0,y:0.5,width:0.5,height:0.5), grid[3] == VideoFrame(x:0.5,y:0,width:0.5,height:0.5) else { return false }
+    let portrait=CanvasAspect.portrait.size(source:CGSize(width:1920,height:1080)), square=CanvasAspect.square.size(source:CGSize(width:1281,height:721))
+    return portrait == CGSize(width:1080,height:1920) && square == CGSize(width:1282,height:1282) && (column+row+grid).allSatisfy(\.isValid)
+}
+check("Split screen without a main video uses the first as main and starts all at zero") {
+    let videos=(0..<3).map { VideoClip(path:"v\($0).mp4",duration:Int64(1000*($0+2))) }
+    let p=try Project().addingSplitScreen(videos,layout:.column,canvas:.portrait,at:5000)
+    guard p.clips.map(\.id) == [videos[0].id], p.layerTracks.count == 2, p.layers.allSatisfy({ $0.start == 0 }) else { return false }
+    let restored=try JSONDecoder().decode(Project.self,from:JSONEncoder().encode(p))
+    return restored == p && restored.canvas == .portrait && restored.clips[0].frame == SplitLayout.column.cells(3)[0] && p.duration == 4000
+}
+check("Split screen on an existing project adds separate tracks at the playhead and keeps the main video") {
+    var base=try Project().replacingClips([VideoClip(path:"main.mp4",duration:10000)])
+    base.cues=[Cue(language:.fr,start:0,end:1000,text:"Main")]
+    let videos=(0..<4).map { _ in VideoClip(path:"g.mp4",duration:2000) }
+    let p=try base.addingSplitScreen(videos,layout:.grid,canvas:.source,at:3000)
+    guard p.clips == base.clips, p.cues == base.cues, p.layerTracks.count == 4, p.layers.allSatisfy({ $0.start == 3000 && $0.clip.frame != nil }), p.canvasAspect == nil else { return false }
+    guard rejects({ _ = try base.addingSplitScreen(Array(videos.prefix(3)),layout:.grid,canvas:.source,at:0) }), rejects({ _ = try base.addingSplitScreen([],layout:.row,canvas:.source,at:0) }) else { return false }
+    // Reusing a split clip from the media library starts full-canvas again; cutting keeps the cell.
+    let copy=try p.addingLayer(from:p.layers[0].id,at:0)
+    let cut=try p.cuttingLayer(p.layers[0].id,at:4000)
+    guard copy.layers.first(where:{ !p.layers.map(\.id).contains($0.id) })?.clip.frame == nil, cut.layers.filter({ $0.trackIdentifier == p.layers[0].trackIdentifier }).allSatisfy({ $0.clip.frame == p.layers[0].clip.frame }) else { return false }
+    var bad=p.layers; bad[0].clip.frame=VideoFrame(x:0.8,y:0,width:0.5,height:1)
+    return rejects({ _ = try p.replacingLayers(bad) })
+}
+check("Crop keeps the inner picture and rejects ranges that leave too little") {
+    let crop=VideoCrop(top:0.1,bottom:0.2,left:0,right:0.05)
+    guard crop.keptRect(in:CGSize(width:200,height:100)) == CGRect(x:0,y:20,width:190,height:70), crop.isValid, VideoCrop().isEmpty else { return false }
+    var p=try Project().replacingClips([VideoClip(path:"a.mp4",duration:1000)])
+    var clips=p.clips; clips[0].crop=crop; p=try p.replacingClips(clips)
+    let restored=try JSONDecoder().decode(Project.self,from:JSONEncoder().encode(p))
+    guard restored.clips[0].crop == crop else { return false }
+    return [VideoCrop(top:0.5),VideoCrop(left:0.45,right:0.46),VideoCrop(bottom:-0.01),VideoCrop(top:.nan)].allSatisfy { bad in
+        var c=clips; c[0].crop=bad; return rejects({ _ = try p.replacingClips(c) })
+    }
+}
+check("Auto canvas fits each video whole: column heights and row widths follow the pictures") {
+    // 16:9 over 4:3 in a column: equal widths, canvas ratio 1 / (9/16 + 3/4).
+    guard let column=SplitLayout.column.fittedCells(aspects:[16.0/9,4.0/3]) else { return false }
+    let ratio=1/(9.0/16+3.0/4)
+    guard abs(column.canvasRatio-ratio)<1e-9,abs(column.cells[0].y+column.cells[0].height-1)<1e-9,abs(column.cells[1].y)<1e-9 else { return false }
+    // Each cell's shape on the canvas equals its video's ratio.
+    for (cell,aspect) in zip(column.cells,[16.0/9,4.0/3]) where abs(cell.width*ratio/cell.height-aspect)>1e-9 { return false }
+    guard let row=SplitLayout.row.fittedCells(aspects:[16.0/9,9.0/16,1]) else { return false }
+    for (cell,aspect) in zip(row.cells,[16.0/9,9.0/16,1]) where abs(cell.width*row.canvasRatio/cell.height-aspect)>1e-9 { return false }
+    guard SplitLayout.grid.fittedCells(aspects:[1,1,1]) == nil,SplitLayout.row.fittedCells(aspects:[0]) == nil else { return false }
+    let videos=[VideoClip(path:"a.mp4",duration:1000),VideoClip(path:"b.mp4",duration:1000)]
+    let p=try Project().addingSplitScreen(videos,layout:.column,canvas:.fitVideos,at:0,aspects:[16.0/9,16.0/9])
+    let size=CanvasAspect.fitVideos.size(source:CGSize(width:1920,height:1080),ratio:p.canvasRatio)
+    guard p.canvas == .fitVideos,abs(p.canvasRatio!-8.0/9)<1e-9,size == CGSize(width:1706,height:1920) else { return false }
+    guard rejects({ _ = try Project().addingSplitScreen(videos,layout:.column,canvas:.fitVideos,at:0) }) else { return false }
+    var bad=p; bad.canvasRatio = .infinity
+    let restored=try JSONDecoder().decode(Project.self,from:JSONEncoder().encode(p))
+    return rejects({ try bad.validate() }) && restored == p
+}
+check("Split dividers move the shared edge, keep minimum sizes and follow cut pieces") {
+    let videos=(0..<2).map { _ in VideoClip(path:"v.mp4",duration:4000) }
+    var p=try Project().addingSplitScreen(videos,layout:.column,canvas:.portrait,at:0)
+    p=try p.cuttingLayer(p.layers[0].id,at:2000)
+    let dividers=p.splitDividers(at:1000)
+    guard dividers.count == 1,let d=dividers.first,!d.vertical,abs(d.position-0.5)<1e-9,d.before.count == 1,d.after == [p.clips[0].id] else { return false }
+    let moved=try p.movingSplitDivider(d,to:0.3)
+    // Top (main) cell grows down to 0.3; both pieces of the cut bottom track shrink together.
+    guard moved.clips[0].frame == VideoFrame(x:0,y:0.3,width:1,height:0.7),moved.layers.count == 2,
+          moved.layers.allSatisfy({ $0.clip.frame == VideoFrame(x:0,y:0,width:1,height:0.3) }) else { return false }
+    let clamped=try p.movingSplitDivider(d,to:-1)
+    guard abs(clamped.clips[0].frame!.y-0.05)<1e-9,clamped.splitDividers(at:3000).count == 1 else { return false }
+    // 2 × 2: one vertical and one horizontal line, each spanning both rows/columns.
+    let grid=try Project().addingSplitScreen((0..<4).map { _ in VideoClip(path:"g.mp4",duration:1000) },layout:.grid,canvas:.source,at:0)
+    let lines=grid.splitDividers(at:0)
+    guard lines.count == 2,lines.allSatisfy({ $0.before.count == 2 && $0.after.count == 2 && $0.from == 0 && $0.to == 1 }) else { return false }
+    let wide=try grid.movingSplitDivider(lines.first { $0.vertical }!,to:0.6)
+    guard wide.allClips.filter({ $0.frame!.x == 0 }).allSatisfy({ abs($0.frame!.width-0.6)<1e-9 }) else { return false }
+    // Hidden tracks and times without split clips have no dividers.
+    var hidden=p; for i in hidden.videoLayers!.indices { hidden.videoLayers![i].hidden=true }
+    let plain=try Project().replacingClips([VideoClip(path:"a",duration:1)])
+    return hidden.splitDividers(at:1000).isEmpty && p.splitDividers(at:5000).isEmpty && plain.splitDividers(at:0).isEmpty
+}
+check("Projects saved before split screen decode with full-canvas clips and source canvas") {
+    var legacy=try Project().replacingClips([VideoClip(path:"a.mp4",duration:1000)])
+    legacy=try legacy.addingLayer(from:legacy.clips[0].id,at:0)
+    var json=try JSONSerialization.jsonObject(with:JSONEncoder().encode(legacy)) as! [String:Any]
+    json.removeValue(forKey:"canvasAspect")
+    let restored=try JSONDecoder().decode(Project.self,from:JSONSerialization.data(withJSONObject:json))
+    return restored.canvas == .source && restored.allClips.allSatisfy { $0.frame == nil && $0.crop == nil }
+}
 check("PiP rejects invalid geometry and IDs, survives deleting main video") {
     let p=try Project().replacingClips([VideoClip(path:"a.mp4",duration:2000)])
     let q=try p.addingLayer(from:p.clips[0].id,at:1000)

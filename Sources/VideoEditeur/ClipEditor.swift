@@ -156,16 +156,21 @@ extension EditorController {
             let title=label(value.0,size:12); title.frame=NSRect(x:0,y:268-i*36,width:180,height:24); form.addSubview(title)
             let field=NSTextField(string:String(format:"%.3f",value.1)); field.frame=NSRect(x:190,y:268-i*36,width:210,height:24); field.setAccessibilityLabel(value.0); form.addSubview(field); fields.append(field)
         }
+        let frameControls=FrameControls(adding:form,clip:original,canvas:project.canvas)
         alert.accessoryView=form; alert.addButton(withTitle:L("应用")); alert.addButton(withTitle:L("取消"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let numbers=fields.compactMap{Double($0.stringValue)}
-        guard numbers.count == 8,numbers.allSatisfy({$0.isFinite && abs($0)<1e9}) else { showError(SubtitleError.invalid(L("请输入有效数值"))); return }
+        guard numbers.count == 8,numbers.allSatisfy({$0.isFinite && abs($0)<1e9}),let crop=frameControls.selectedCrop else { showError(SubtitleError.invalid(L("请输入有效数值"))); return }
         var clip=original
         clip.sourceStart=Int64(numbers[0]*1000); clip.sourceEnd=Int64(numbers[1]*1000); clip.transition=Int64(numbers[2]*1000)
         clip.effects.fadeIn=Int64(numbers[3]*1000); clip.effects.fadeOut=Int64(numbers[4]*1000)
         clip.effects.brightness=numbers[5]; clip.effects.contrast=numbers[6]; clip.effects.saturation=numbers[7]
+        clip.frame=frameControls.selectedFrame; clip.crop=crop
         var clips=project.clips; guard let i=clips.firstIndex(where:{$0.id == clip.id}) else { return }; clips[i]=clip
-        do { commit(try project.replacingClips(clips),name:L("视频裁剪与特效")) } catch { showError(error) }
+        do {
+            var next=try project.replacingClips(clips); try applyCanvas(frameControls.selectedCanvas,to:&next,clip:clip,original:original)
+            commit(next,name:L("视频裁剪与特效"))
+        } catch { showError(error) }
     }
     func chooseExportColor() -> VideoColor? {
         do {

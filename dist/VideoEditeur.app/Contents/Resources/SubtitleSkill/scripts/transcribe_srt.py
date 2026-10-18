@@ -182,6 +182,36 @@ def _is_metal_unavailable_error(error: Exception) -> bool:
     return "No Metal device available" in message or "metal::load_device" in message
 
 
+def _fill_empty_windows(segments, audio_path, kwargs, mlx_whisper, min_seconds=2.0):
+    """Whisper 偶尔把整个 30 秒窗口判为空（常见于问句之后），导致中间一段没有字幕。
+    对无文字/无词的长空段单独重转写该时间范围（不参考前文），用结果替换空段。"""
+    empty = [i for i, seg in enumerate(segments)
+             if not seg.get("text", "").strip() and not seg.get("words") and seg["end"] - seg["start"] >= min_seconds]
+    if not empty:
+        return segments
+    from mlx_whisper.audio import load_audio, SAMPLE_RATE
+    audio = load_audio(audio_path)
+    filled = []
+    for i, seg in enumerate(segments):
+        if i not in empty:
+            filled.append(seg)
+            continue
+        start = seg["start"]
+        # 延伸到下一段开头，覆盖空窗口结束后、下一句之前的语音
+        stop = segments[i + 1]["start"] if i + 1 < len(segments) else seg["end"] + 1.0
+        print(f"补转写空白区间：{format_timestamp(start)} → {format_timestamp(stop)}", file=sys.stderr)
+        piece = audio[int(start * SAMPLE_RATE):int(stop * SAMPLE_RATE)]
+        retry = mlx_whisper.transcribe(piece, **dict(kwargs, condition_on_previous_text=False))
+        for part in retry.get("segments", []):
+            if not part.get("text", "").strip():
+                continue
+            part = dict(part, start=part["start"] + start, end=min(part["end"] + start, stop))
+            part["words"] = [dict(w, start=w["start"] + start, end=min(w["end"] + start, stop)) for w in part.get("words", [])
+                             if w["start"] + start < stop]
+            filled.append(part)
+    return filled
+
+
 def _transcribe_mlx(audio_path: str, language: str = None):
     """MLX Whisper 转写（Metal GPU 加速，默认引擎）"""
     if os.environ.get("CODEX_SANDBOX") == "seatbelt":
@@ -225,6 +255,8 @@ def _transcribe_mlx(audio_path: str, language: str = None):
 
     lang = result.get("language", "unknown")
     print(f"检测语言：{lang}", file=sys.stderr)
+
+    result["segments"] = _fill_empty_windows(result.get("segments", []), audio_path, kwargs, mlx_whisper)
 
     # 转换为与 faster-whisper 兼容的 segment 对象
     class Seg:

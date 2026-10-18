@@ -82,7 +82,12 @@ struct EditedAsset {
         func outputTime(_ ms: Int64) -> CMTime { CMTimeMultiplyByFloat64(CMTime(value:ms,timescale:1000),multiplier:1/speed) }
         guard let first=project.allClips.first else { throw SubtitleError.invalid(L("请先添加视频")) }
         let probe=try MediaProbe(first.path)
-        size=CGSize(width:max(2,ceil(probe.size.width/2)*2),height:max(2,ceil(probe.size.height/2)*2))
+        if project.canvas == .source { size=CGSize(width:max(2,ceil(probe.size.width/2)*2),height:max(2,ceil(probe.size.height/2)*2)) }
+        else {
+            // A shaped canvas mixes several sources; use the sharpest one so no video is scaled down needlessly.
+            let largest=try Set(project.allClips.map(\.path)).map { try MediaProbe($0).size }.max { max($0.width,$0.height) < max($1.width,$1.height) } ?? probe.size
+            size=project.canvas.size(source:largest,ratio:project.canvasRatio)
+        }
         asset=AVMutableComposition(); video=AVMutableVideoComposition(); audio=AVMutableAudioMix()
         var layers: [RenderLayer]=[],parameters: [AVAudioMixInputParameters]=[]
         let places=project.renderPlacements
@@ -93,7 +98,11 @@ struct EditedAsset {
                   let target=asset.addMutableTrack(withMediaType:.video,preferredTrackID:kCMPersistentTrackID_Invalid) else { throw SubtitleError.invalid(L("找不到视频：{0}", [String(describing: p.clip.path)])) }
             if i==0,v.minFrameDuration.isValid,CMTimeGetSeconds(v.minFrameDuration)>0 { frameDuration=v.minFrameDuration }
             let sourceRange=CMTimeRange(start:CMTime(value:p.clip.sourceStart,timescale:1000),duration:CMTime(value:p.clip.duration,timescale:1000))
-            let range=CMTimeRangeGetIntersection(sourceRange,otherRange:v.timeRange)
+            // Edit lists can start with an empty segment (no picture); only real media counts, and the
+            // hold-frame code below fills the gap with the first frame.
+            let media=v.segments.filter { !$0.isEmpty }.map(\.timeMapping.target)
+            let mediaRange=media.isEmpty ? v.timeRange : CMTimeRange(start:media.first!.start,end:CMTimeRangeGetEnd(media.last!))
+            let range=CMTimeRangeGetIntersection(sourceRange,otherRange:mediaRange)
             guard range.isValid,CMTimeGetSeconds(range.duration)>0 else { throw SubtitleError.invalid(L("所选区间没有可用视频画面")) }
             let destination=CMTime(value:p.start,timescale:1000)
             let leading=CMTimeSubtract(range.start,sourceRange.start)
@@ -157,6 +166,8 @@ final class EditCompositor: NSObject, AVVideoCompositing {
     var sourcePixelBufferAttributes: [String:Any]? { [kCVPixelBufferPixelFormatTypeKey as String:[kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,kCVPixelFormatType_32BGRA]] }
     var requiredPixelBufferAttributesForRenderContext: [String:Any] { [kCVPixelBufferPixelFormatTypeKey as String:kCVPixelFormatType_64RGBAHalf,kCVPixelBufferMetalCompatibilityKey as String:true] }
     private let queue=DispatchQueue(label:"studio.edit.compositor")
+    /// Last decoded frame per source track (queue-confined), reused when a frame is missing inside the file.
+    private var lastFrames: [CMPersistentTrackID:CVPixelBuffer]=[:]
     private let context=CIContext(options:[.workingColorSpace:CGColorSpace(name:CGColorSpace.extendedLinearITUR_2020)!, .workingFormat:CIFormat.RGBAh,.cacheIntermediates:false])
     func renderContextChanged(_ newRenderContext: AVVideoCompositionRenderContext) {}
     func startRequest(_ request: AVAsynchronousVideoCompositionRequest) {
@@ -168,13 +179,21 @@ final class EditCompositor: NSObject, AVVideoCompositing {
             for layer in instruction.layers {
                 let pip=instruction.project.layers.first{$0.id == layer.placement.clip.id}
                 if pip?.hidden ?? instruction.project.isVideoHidden { continue }
-                guard let buffer=request.sourceFrame(byTrackID:layer.trackID) else { request.finish(with:SubtitleError.invalid(L("读取视频片段失败"))); return }
+                // A missing frame (gap in the source) repeats the previous one instead of stopping preview or export.
+                guard let buffer=request.sourceFrame(byTrackID:layer.trackID) ?? self.lastFrames[layer.trackID] else { continue }
+                self.lastFrames[layer.trackID]=buffer
                 let flip=CGAffineTransform(scaleX:1,y:-1)
                 var frame=CIImage(cvPixelBuffer:buffer).transformed(by:flip).transformed(by:layer.transform).transformed(by:flip)
                 frame=frame.transformed(by:CGAffineTransform(translationX:-frame.extent.minX,y:-frame.extent.minY))
-                let scale=min(size.width/frame.extent.width,size.height/frame.extent.height)
+                if let crop=layer.placement.clip.crop,!crop.isEmpty {
+                    let kept=crop.keptRect(in:frame.extent.size)
+                    frame=frame.cropped(to:kept).transformed(by:CGAffineTransform(translationX:-kept.minX,y:-kept.minY))
+                }
+                // Full canvas: fit with black bars. Split-screen cell: fill the cell and crop the overflow.
+                let cell=layer.placement.clip.frame.map { CGRect(x:$0.x*size.width,y:$0.y*size.height,width:$0.width*size.width,height:$0.height*size.height) } ?? bounds
+                let scale=layer.placement.clip.frame == nil ? min(cell.width/frame.extent.width,cell.height/frame.extent.height) : max(cell.width/frame.extent.width,cell.height/frame.extent.height)
                 frame=frame.transformed(by:CGAffineTransform(scaleX:scale,y:scale))
-                frame=frame.transformed(by:CGAffineTransform(translationX:(size.width-frame.extent.width)/2,y:(size.height-frame.extent.height)/2))
+                frame=frame.transformed(by:CGAffineTransform(translationX:cell.midX-frame.extent.midX,y:cell.midY-frame.extent.midY)).cropped(to:cell)
                 let e=layer.placement.clip.effects,elapsed=ms-layer.placement.start,remaining=layer.placement.end-ms
                 if e.brightness != 0 || e.contrast != 1 || e.saturation != 1 {
                     frame=frame.applyingFilter("CIColorControls",parameters:[kCIInputBrightnessKey:e.brightness,kCIInputContrastKey:e.contrast,kCIInputSaturationKey:e.saturation])
@@ -186,7 +205,7 @@ final class EditCompositor: NSObject, AVVideoCompositing {
                 if layer.placement.clip.transition>0 { alpha=min(alpha,Double(elapsed)/Double(layer.placement.clip.transition)) }
                 if e.fadeIn>0 { alpha=min(alpha,Double(elapsed)/Double(e.fadeIn)) }
                 if e.fadeOut>0 { alpha=min(alpha,Double(remaining)/Double(e.fadeOut)) }
-                frame=frame.composited(over:CIImage(color:CIColor(red:0,green:0,blue:0)).cropped(to:bounds))
+                frame=frame.composited(over:CIImage(color:CIColor(red:0,green:0,blue:0)).cropped(to:cell))
                 if alpha<1 { frame=frame.applyingFilter("CIColorMatrix",parameters:["inputAVector":CIVector(x:0,y:0,z:0,w:max(0,alpha))]) }
                 result=frame.composited(over:result)
             }
@@ -202,7 +221,7 @@ final class EditCompositor: NSObject, AVVideoCompositing {
             request.finish(withComposedVideoFrame:target)
         } }
     }
-    func cancelAllPendingVideoCompositionRequests() { queue.sync {} }
+    func cancelAllPendingVideoCompositionRequests() { queue.sync { lastFrames.removeAll() } }
 }
 
 /// Solid-background text removal; this does not reconstruct textured or moving scenery.
@@ -224,5 +243,54 @@ enum VideoRegionRenderer {
             result=fill.composited(over:result)
         }
         return result
+    }
+}
+
+/// Finds letterbox/pillarbox bars recorded into a video. Samples several frames and keeps the
+/// smallest bar seen on each edge, so a dark scene is not mistaken for a border.
+enum BlackBorderDetector {
+    static func detect(path: String,sourceStart: Int64=0,sourceEnd: Int64?=nil,samples: Int=5) -> VideoCrop? {
+        let asset=AVURLAsset(url:URL(fileURLWithPath:path))
+        let generator=AVAssetImageGenerator(asset:asset)
+        generator.appliesPreferredTrackTransform=true
+        generator.maximumSize=CGSize(width:1280,height:1280)
+        generator.requestedTimeToleranceBefore=CMTime(value:1,timescale:2); generator.requestedTimeToleranceAfter=CMTime(value:1,timescale:2)
+        let end=sourceEnd ?? Int64(CMTimeGetSeconds(asset.duration)*1000)
+        guard end>sourceStart else { return nil }
+        var edges: [Double]?=nil
+        for i in 0..<samples {
+            let ms=sourceStart+(end-sourceStart)*Int64(i+1)/Int64(samples+1)
+            guard let image=try? generator.copyCGImage(at:CMTime(value:ms,timescale:1000),actualTime:nil),let found=bars(in:image) else { continue }
+            edges=edges.map { zip($0,found).map { min($0,$1) } } ?? found
+        }
+        guard let edges else { return nil }
+        // Thin bars of a few pixels still show as a dark seam between cells, so keep them; cap so a mostly black frame is never cropped away.
+        let value=edges.map { min(0.4,$0) }
+        let crop=VideoCrop(top:value[0],bottom:value[1],left:value[2],right:value[3])
+        return crop.isEmpty ? nil : crop
+    }
+    /// Top, bottom, left, right fractions of near-black rows/columns at each edge of an upright image.
+    static func bars(in image: CGImage) -> [Double]? {
+        let w=image.width,h=image.height
+        guard w>8,h>8,let context=CGContext(data:nil,width:w,height:h,bitsPerComponent:8,bytesPerRow:w,space:CGColorSpaceCreateDeviceGray(),bitmapInfo:CGImageAlphaInfo.none.rawValue),
+              let data=context.data else { return nil }
+        context.draw(image,in:CGRect(x:0,y:0,width:w,height:h))
+        let pixels=data.bindMemory(to:UInt8.self,capacity:w*h)
+        // Context rows run top to bottom in memory.
+        func dark(_ count: Int,_ value: (Int) -> UInt8) -> Bool {
+            var sum=0,bright=0
+            for i in 0..<count { let v=Int(value(i)); sum+=v; if v>48 { bright+=1 } }
+            return sum<count*22 && bright*50<count
+        }
+        func rowDark(_ y: Int) -> Bool { dark(w) { pixels[y*w+$0] } }
+        func columnDark(_ x: Int) -> Bool { dark(h) { pixels[$0*w+x] } }
+        func run(_ limit: Int,_ isDark: (Int) -> Bool) -> Int { var n=0; while n<limit && isDark(n) { n+=1 }; return n }
+        let top=run(h/2) { rowDark($0) },bottom=run(h/2) { rowDark(h-1-$0) }
+        let left=run(w/2) { columnDark($0) },right=run(w/2) { columnDark(w-1-$0) }
+        // An all-black frame says nothing about borders.
+        if top>=h/2 || left>=w/2 { return nil }
+        // Compression leaves a soft grey seam between a bar and the picture; cut 1% more to hide it.
+        func edge(_ n: Int,_ total: Int) -> Double { n == 0 ? 0 : Double(n)/Double(total)+0.01 }
+        return [edge(top,h),edge(bottom,h),edge(left,w),edge(right,w)]
     }
 }
