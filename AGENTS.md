@@ -70,4 +70,6 @@ open dist/VideoEditeur.app
 
 - 主视频片段可用兼容可选 `timelineGap` 保存前置空档，旧工程默认零。拖动主体按绝对时间移动，保持其他片段/音乐位置并重映射关联字幕；分割的第二段和素材副本必须清除继承的 gap，避免重复空档。
 
+- 字幕列表可删除某语言字幕文件：删除该语言全部非文字轨道字幕，并以可选 `removedSubtitleLanguages` 隐藏时间轴行（旧工程为 nil）；该语言重新出现字幕或重新生成时恢复，样式保留。
+
 - 字幕生成源语言支持 fr/en，目标支持 zh/en/fr，默认 fr→zh；同语言仅转写。generationLanguages、英语样式及显示状态使用可选字段兼容旧工程。任务缓存按 languages.json 校验，不跨语言复用；多语言 skill 源码位于 Assets/Skills/video-generate-multilingual-subtitles，打包至 Resources/SubtitleSkill。

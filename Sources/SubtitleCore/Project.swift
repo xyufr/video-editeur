@@ -93,11 +93,29 @@ public struct Project: Codable, Equatable {
     public var englishStyle: SubtitleStyle?
     public var showEnglish: Bool?
     public var generationLanguages: GenerationLanguages?
+    /// Languages whose subtitle file the user deleted; their rows stay hidden until cues of that
+    /// language exist again (for example after generating). nil in older projects.
+    public var removedSubtitleLanguages: [Language]?
     public var subtitleLanguages: [Language] {
         let pair=generationLanguages ?? GenerationLanguages()
-        var result=pair.source == pair.target ? [pair.source] : [pair.source,pair.target]
+        var result=(pair.source == pair.target ? [pair.source] : [pair.source,pair.target]).filter { !(removedSubtitleLanguages ?? []).contains($0) }
         for language in Language.allCases where cues.contains(where: { $0.trackID == nil && $0.language == language }) && !result.contains(language) { result.append(language) }
         return result
+    }
+    /// Deletes one language's subtitle file: all of its cues (not text-track cues) and its timeline row.
+    /// Styles are kept, so generating that language again restores the previous look.
+    public func removingSubtitleLanguage(_ language: Language) -> Project {
+        var next=self
+        next.cues.removeAll { $0.trackID == nil && $0.language == language }
+        var removed=removedSubtitleLanguages ?? []
+        if !removed.contains(language) { removed.append(language) }
+        next.removedSubtitleLanguages=removed
+        return next
+    }
+    /// Shows these languages' rows again, e.g. when subtitles are generated for them.
+    public mutating func restoreSubtitleLanguages(_ languages: [Language]) {
+        let remaining=(removedSubtitleLanguages ?? []).filter { !languages.contains($0) }
+        removedSubtitleLanguages=remaining.isEmpty ? nil : remaining
     }
     public var showFrench = true
     public var showChinese = true

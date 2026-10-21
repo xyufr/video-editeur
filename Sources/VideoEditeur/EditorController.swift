@@ -467,11 +467,23 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
             cell.addSubview(thumbnail)
         }
         cell.toolTip=entry.title
+        // Subtitle files and text tracks can be deleted from the list; media rows use the timeline tools.
+        let deletable = !isMedia && (entry.language != nil || entry.trackID != nil)
+        let trailing: CGFloat=deletable ? 38 : 8
+        if deletable {
+            let remove=ActionButton("",symbol:"trash",action:{[weak self] in self?.deleteLibraryEntry(entry)})
+            remove.imagePosition = .imageOnly; remove.isBordered=false; remove.contentTintColor=muted; remove.isEnabled = !busy
+            remove.identifier=NSUserInterfaceItemIdentifier("deleteLibraryEntry")
+            let tip=entry.language != nil ? L("删除{0}字幕文件",[entry.language!.title]) : L("删除文字轨道")
+            remove.toolTip=tip; remove.setAccessibilityLabel(tip)
+            remove.frame=NSRect(x:cell.frame.width-34,y:19,width:26,height:24); remove.autoresizingMask=[.minXMargin]
+            cell.addSubview(remove)
+        }
         let title=label(entry.title,size:13,bold:true)
-        title.frame=NSRect(x:textX,y:32,width:max(1,cell.frame.width-textX-8),height:22)
+        title.frame=NSRect(x:textX,y:32,width:max(1,cell.frame.width-textX-trailing),height:22)
         title.lineBreakMode = .byTruncatingTail; title.autoresizingMask=[.width]; cell.addSubview(title)
         let detail=label(entry.detail,size:11,color:muted)
-        detail.frame=NSRect(x:textX,y:8,width:max(1,cell.frame.width-textX-8),height:20)
+        detail.frame=NSRect(x:textX,y:8,width:max(1,cell.frame.width-textX-trailing),height:20)
         detail.lineBreakMode = .byTruncatingTail
         detail.autoresizingMask=[.width]; cell.addSubview(detail)
         return cell
@@ -707,6 +719,27 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         }
         refreshInspector()
     }
+    /// Deletes a subtitle file (all cues of one language and its timeline row) or a text track, after confirmation.
+    func deleteLibraryEntry(_ entry: LibraryEntry,confirm: Bool=true) {
+        guard !busy else { return }
+        view.window?.makeFirstResponder(nil); pauseForEditing()
+        let count=project.cues.filter { entry.contains($0) }.count
+        if confirm {
+            let alert=NSAlert(); alert.alertStyle = .warning
+            alert.messageText=entry.language.map { L("删除{0}字幕文件？",[$0.title]) } ?? L("删除文字轨道“{0}”？",[entry.title])
+            alert.informativeText=L("将同时删除时间轴上对应的 {0} 条字幕。可用 ⌘Z 撤销。",[String(count)])
+            alert.addButton(withTitle:L("删除")); alert.addButton(withTitle:L("取消"))
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        var next=project
+        if let language=entry.language { next=project.removingSubtitleLanguage(language) }
+        else if let id=entry.trackID { next.cues.removeAll { $0.trackID == id }; next.textTracks=next.tracks.filter { $0.id != id } }
+        else { return }
+        if let selected,!next.cues.contains(where:{ $0.id == selected }) { self.selected=nil }
+        setTableSelection([])
+        commit(next,name:entry.language != nil ? L("删除字幕文件") : L("删除文字轨道")); refreshInspector()
+        statusLabel.stringValue=L("已删除 {0} · {1} 条字幕 · ⌘Z 撤销",[entry.title,String(count)])
+    }
     func deleteTextTrack() {
         guard !busy,let id=textTrackChoice.selectedItem?.representedObject as? UUID,
               project.tracks.contains(where:{$0.id == id}) else { return }
@@ -743,6 +776,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     }
     func addSubtitle() {
         guard !busy else { return }
+        guard !project.subtitleLanguages.isEmpty else { showError(SubtitleError.invalid(L("字幕文件已全部删除，可重新生成字幕或新建文字轨道"))); return }
         guard project.subtitleLanguages.contains(where: { project.visible($0) }) else { showError(SubtitleError.invalid(L("请先选择要显示的字幕语言"))); return }
         let language: Language = project.subtitleLanguages.contains(preferredLanguage) && project.visible(preferredLanguage) ? preferredLanguage : project.subtitleLanguages.first(where: { project.visible($0) })!
         do { let cue=try project.newCue(language:language,at:current); var next=project; next.cues.append(cue); commit(next,name:L("添加字幕")); select(cue.id) } catch { showError(error) }
@@ -947,7 +981,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         }
         do { try ToolSettings.current.validate() } catch { showError(error); return }
         let original=project, job=GenerationJob(directory:retry ?? supportDirectory.appendingPathComponent("Jobs/\(UUID().uuidString)"),languages:languages)
-        var generated=project; generated.generationLanguages=languages
+        var generated=project; generated.generationLanguages=languages; generated.restoreSubtitleLanguages([languages.source,languages.target])
         for language in [languages.source,languages.target] { generated.setVisible(true,for:language) }
         if languages.source != .zh && languages.target != .zh && languages.source != languages.target {
             let cue=Cue(language:languages.target,start:0,end:1,text:"")

@@ -513,6 +513,24 @@ check("Ending together trims longer split videos to the shortest without moving 
     let lone=try Project().replacingClips([VideoClip(path:"a.mp4",duration:1000)])
     return rejects({ _ = try locked.endingTogether(with:short.id) }) && rejects({ _ = try lone.endingTogether(with:lone.clips[0].id) })
 }
+check("Deleting a subtitle file removes that language's cues and row, keeps others, text tracks and styles") {
+    var p=Project(); p.duration=10000; p.generationLanguages=GenerationLanguages(source:.fr,target:.zh)
+    var track=TextTrack(name:"Title"); track.style.size=40; p.textTracks=[track]
+    p.cues=[Cue(language:.fr,start:0,end:1000,text:"Bonjour"),Cue(language:.zh,start:0,end:1000,text:"你好"),Cue(language:.zh,start:2000,end:3000,text:"标题",trackID:track.id)]
+    var style=p.chineseStyle; style.size=48; p.applyStyle(style,to:.zh)
+    let q=p.removingSubtitleLanguage(.zh)
+    guard q.subtitleLanguages == [.fr],q.cues.map(\.text) == ["Bonjour","标题"],q.chineseStyle.size == 48,q.tracks == p.tracks else { return false }
+    let none=q.removingSubtitleLanguage(.fr)
+    guard none.subtitleLanguages.isEmpty,none.cues.map(\.text) == ["标题"] else { return false }
+    // A cue of a deleted language (e.g. pasted or generated) shows its row again; generation restores the pair.
+    var back=none; back.cues.append(Cue(language:.zh,start:4000,end:5000,text:"回来"))
+    var regenerated=none; regenerated.restoreSubtitleLanguages([.fr,.zh])
+    guard back.subtitleLanguages == [.zh],regenerated.subtitleLanguages == [.fr,.zh],regenerated.removedSubtitleLanguages == nil else { return false }
+    let restored=try JSONDecoder().decode(Project.self,from:JSONEncoder().encode(none))
+    var legacy=try JSONSerialization.jsonObject(with:JSONEncoder().encode(p)) as! [String:Any]; legacy.removeValue(forKey:"removedSubtitleLanguages")
+    let old=try JSONDecoder().decode(Project.self,from:JSONSerialization.data(withJSONObject:legacy))
+    return restored == none && old.subtitleLanguages == [.fr,.zh]
+}
 check("Projects saved before split screen decode with full-canvas clips and source canvas") {
     var legacy=try Project().replacingClips([VideoClip(path:"a.mp4",duration:1000)])
     legacy=try legacy.addingLayer(from:legacy.clips[0].id,at:0)

@@ -578,3 +578,9 @@ Release 构建通过，65/65 核心检查通过；包含译文占位符一致性
 - 原因：输出帧间隔取自第一个片段的 `minFrameDuration`。`ago1.mp4`（名义 60.04 fps，可变帧率）与 `ssstwitter`（名义 30.04 fps）中存在极短样本，`minFrameDuration` 分别为 1/600 s 与约 1/957 s，导出成为 600 fps，多数播放器无法按时解码。
 - 修复：`EditedAsset.outputFrameDuration` 取工程内所有视频名义帧率的最大值，上限 60，就近归到 23.976/24/25/29.97/30/50/59.94/60（相差 0.5 以内），否则取整；无有效帧率时 30。
 - 验证：`--smoke-export ~/Downloads/ago1.mp4` 新版本输出 60 fps、1012 帧、16.87 s；`--smoke-split` ago1 + ssstwitter 输出 60 fps。`check-multitrack.sh` 中英文新增帧率映射断言与每次导出的实际帧率等于素材期望帧率；`check.sh` 103 通过，`check-editing.sh` 0 FAIL，`smoke-media.sh` 全部 PASS。
+
+## 2026-10-20 · 字幕列表删除字幕文件
+
+- 字幕标签页每个语言行和文字轨道行右侧新增删除按钮；确认后删除该语言全部字幕（不含文字轨道）并隐藏时间轴对应行，或删除文字轨道及其文字；一步撤销。新增可选 `Project.removedSubtitleLanguages`，该语言再有字幕或重新生成时恢复显示；样式保留。全部语言删除后 “添加字幕” 给出明确提示。
+- `check.sh` 104 通过（新增：只删该语言、保留其他语言/文字轨道/样式、全部删除、出现字幕或重新生成后恢复、持久化与旧工程）。`--check-multilingual` 中英文通过：列表 3 行均有删除按钮；确认后中文 2 条字幕删除、列表与时间轴行减少；取消保留文字轨道；删除文字轨道后两步撤销恢复原工程。列表与确认对话框中英文截图检查布局。`--check-local-library`、`check-multitrack.sh` 通过。
+- 未执行：真实窗口目测。

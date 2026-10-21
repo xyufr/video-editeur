@@ -696,7 +696,43 @@ func runMultilingualChecks() throws {
     editor.showSettings()
     editor.refresh()
     guard editor.displayMode.label(forSegment:0) == Language.en.title, editor.displayMode.label(forSegment:1) == Language.fr.title else { throw SubtitleError.invalid("Display language controls failed") }
-    print("MULTILINGUAL_OK six pairs, Claude/Codex routing, Claude login error, skipped empty/unusable translations, legacy settings, same-language transcription, cache isolation, retry, picker defaults/cancel and display labels (offline fixtures)")
+    // Deleting subtitle files from the Subtitles list (with confirmation), text tracks too, and undo.
+    let listEditor=EditorController(); _=listEditor.view
+    let listWindow=NSWindow(contentRect:NSRect(x:0,y:0,width:1140,height:760),styleMask:[.titled],backing:.buffered,defer:false)
+    listWindow.contentViewController=listEditor
+    var listed=Project(); listed.videoPath=dir.appendingPathComponent("fixture.mp4").path; listed.duration=10000; listed.generationLanguages=GenerationLanguages()
+    let titleTrack=TextTrack(name:"Title"); listed.textTracks=[titleTrack]
+    listed.cues=[Cue(language:.fr,start:0,end:1000,text:"Bonjour"),Cue(language:.zh,start:0,end:1000,text:"你好"),Cue(language:.zh,start:1000,end:2000,text:"再见"),Cue(language:.zh,start:3000,end:4000,text:"标题",trackID:titleTrack.id)]
+    listEditor.project=listed; listEditor.timeline.subtitleTracksRequested=true
+    listEditor.languageChoice.selectedSegment=1; listEditor.refresh(); listEditor.root.needsLayout=true; listEditor.root.layoutSubtreeIfNeeded(); listEditor.table.reloadData()
+    func deleteButtons() -> Int { (0..<listEditor.table.numberOfRows).compactMap { listEditor.table.view(atColumn:0,row:$0,makeIfNecessary:true) }.filter { $0.subviews.contains { $0.identifier?.rawValue == "deleteLibraryEntry" } }.count }
+    guard listEditor.libraryEntries.count == 3,deleteButtons() == 3 else { throw SubtitleError.invalid("Subtitle list rows or delete buttons missing: \(listEditor.libraryEntries.count) / \(deleteButtons())") }
+    if let bitmap=listEditor.left.bitmapImageRepForCachingDisplay(in:listEditor.left.bounds) {
+        listEditor.left.cacheDisplay(in:listEditor.left.bounds,to:bitmap)
+        try? bitmap.representation(using:.png,properties:[:])?.write(to:URL(fileURLWithPath:"/tmp/subtitle-list-delete-\(InterfaceLanguage.current.rawValue).png"))
+    }
+    let rowsBefore=listEditor.timeline.subtitleRowCount
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1))
+    DispatchQueue.main.asyncAfter(deadline:.now()+0.2) {
+        if let view=NSApp.modalWindow?.contentView,let bitmap=view.bitmapImageRepForCachingDisplay(in:view.bounds) {
+            view.cacheDisplay(in:view.bounds,to:bitmap)
+            try? bitmap.representation(using:.png,properties:[:])?.write(to:URL(fileURLWithPath:"/tmp/subtitle-delete-confirm-\(InterfaceLanguage.current.rawValue).png"))
+        }
+        NSApp.stopModal(withCode:.alertFirstButtonReturn)
+    }
+    listEditor.deleteLibraryEntry(listEditor.libraryEntries.first { $0.language == .zh }!)
+    guard listEditor.project.cues.map(\.text) == ["Bonjour","标题"],listEditor.libraryEntries.map(\.title).contains(where:{ $0.hasPrefix(Language.zh.title) }) == false,
+          listEditor.timeline.subtitleRowCount == rowsBefore-1,listEditor.table.numberOfRows == 2 else { throw SubtitleError.invalid("Subtitle file delete failed: \(listEditor.project.cues.map(\.text)) rows \(listEditor.timeline.subtitleRowCount)") }
+    DispatchQueue.main.asyncAfter(deadline:.now()+0.2) { NSApp.stopModal(withCode:.alertSecondButtonReturn) }
+    listEditor.deleteLibraryEntry(listEditor.libraryEntries.first { $0.trackID != nil }!)
+    guard listEditor.project.tracks.count == 1 else { throw SubtitleError.invalid("Cancel must keep the text track") }
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1))
+    listEditor.deleteLibraryEntry(listEditor.libraryEntries.first { $0.trackID != nil }!,confirm:false)
+    guard listEditor.project.tracks.isEmpty,listEditor.project.cues.map(\.text) == ["Bonjour"] else { throw SubtitleError.invalid("Text track delete failed") }
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.history.undo()
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.history.undo()
+    guard listEditor.project == listed else { throw SubtitleError.invalid("Subtitle file delete undo failed") }
+    print("MULTILINGUAL_OK six pairs, subtitle-file and text-track delete from the list with confirm/cancel/undo, Claude/Codex routing, Claude login error, skipped empty/unusable translations, legacy settings, same-language transcription, cache isolation, retry, picker defaults/cancel and display labels (offline fixtures)")
 }
 
 func runTimelineFileDropChecks() throws {
