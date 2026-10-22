@@ -531,6 +531,25 @@ check("Deleting a subtitle file removes that language's cues and row, keeps othe
     let old=try JSONDecoder().decode(Project.self,from:JSONSerialization.data(withJSONObject:legacy))
     return restored == none && old.subtitleLanguages == [.fr,.zh]
 }
+check("Adding text where the track is busy creates another track so several texts show at once") {
+    var p=Project(); p.duration=10000
+    // No track yet: the first text creates one.
+    let (first,a)=try p.addingText(at:1000,trackID:nil)
+    guard first.tracks.count == 1,a.trackID == first.tracks[0].id else { return false }
+    p=first; p.textTracks![0].style.size=44; p.textTracks![0].style.font="Georgia"
+    // Same time, same track: a second track copies the look at a different height.
+    let (second,b)=try p.addingText(at:1500,trackID:p.tracks[0].id)
+    let newTrack=second.tracks.first { $0.id == b.trackID }!
+    guard second.tracks.count == 2,newTrack.style.size == 44,newTrack.style.font == "Georgia",abs(newTrack.style.y-p.tracks[0].style.y)>=0.1,
+          second.active(at:1600).count == 2 else { return false }
+    let (third,c)=try second.addingText(at:1600,trackID:newTrack.id)
+    let heights=third.tracks.map(\.style.y)
+    guard third.tracks.count == 3,Set(heights.map { Int($0*100) }).count == 3,third.active(at:1700).count == 3 else { return false }
+    // A free moment on the chosen track reuses it.
+    let (later,d)=try third.addingText(at:5000,trackID:p.tracks[0].id)
+    guard later.tracks.count == 3,d.trackID == p.tracks[0].id,c.trackID != nil else { return false }
+    return rejects({ _ = try p.addingText(at:10000,trackID:nil) })
+}
 check("Projects saved before split screen decode with full-canvas clips and source canvas") {
     var legacy=try Project().replacingClips([VideoClip(path:"a.mp4",duration:1000)])
     legacy=try legacy.addingLayer(from:legacy.clips[0].id,at:0)

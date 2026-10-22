@@ -193,6 +193,7 @@ public enum UILocalization {
         "裁切范围无效：每边 0–45%，上下或左右合计不超过 90%": "Invalid crop: each edge 0–45%, top + bottom and left + right at most 90%.",
         "分屏": "Split Screen",
         "调整分屏比例": "Resize Split Screen",
+        "该轨道此处已有文字，已新建文字轨道 · 可拖动到想要的位置": "That track already has text here, so a new text track was added · drag it into place",
         "删除{0}字幕文件": "Delete {0} subtitle file",
         "删除{0}字幕文件？": "Delete the {0} subtitle file?",
         "删除文字轨道“{0}”？": "Delete text track “{0}”?",

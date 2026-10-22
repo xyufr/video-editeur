@@ -764,14 +764,21 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
             timeline.scrollToVisible(timeline.rect(cue))
         } catch { showError(error) }
     }
+    /// Adds a text at the playhead. If the chosen track already shows a text there, a new text track is
+    /// created instead, so several texts can be on screen at the same time.
     func addTrackText() {
-        guard !busy else { return }
-        guard let id=textTrackChoice.selectedItem?.representedObject as? UUID else { addTextTrack(); return }
+        guard !busy,project.duration > 0 else { return }
         pauseForEditing()
         do {
-            let cue=try project.newCue(language:.zh,at:current,trackID:id)
-            var next=project; next.cues.append(cue); commit(next,name:"添加说明文字"); select(cue.id)
+            let chosen=textTrackChoice.selectedItem?.representedObject as? UUID
+            let (next,cue)=try project.addingText(at:current,trackID:chosen)
+            let created=next.tracks.count>project.tracks.count
+            commit(next,name:created ? L("新建文字轨道") : L("添加文字"))
+            guard project == next else { return }
+            if let i=next.tracks.firstIndex(where:{ $0.id == cue.trackID }) { textTrackChoice.selectItem(at:i) }
+            select(cue.id)
             timeline.scrollToVisible(timeline.rect(cue))
+            if created,chosen != nil { statusLabel.stringValue=L("该轨道此处已有文字，已新建文字轨道 · 可拖动到想要的位置") }
         } catch { showError(error) }
     }
     func addSubtitle() {

@@ -160,6 +160,25 @@ public struct Project: Codable, Equatable {
         guard end > start else { throw SubtitleError.invalid(L("当前位置没有可用时间区间")) }
         return Cue(language: language, start: start, end: end, text: trackID != nil ? "添加说明文字" : (language == .zh ? "新的中文字幕" : (language == .en ? "New subtitle" : "Nouveau sous-titre")), trackID:trackID)
     }
+    /// Adds a text at `time` on `trackID`. When that track already shows a text then (or there is no
+    /// track), a new text track is created so several texts can be on screen at once; it copies the
+    /// track's look and sits at a height not used by texts visible at that moment.
+    public func addingText(at time: Int64,trackID: UUID?) throws -> (project: Project,cue: Cue) {
+        if let id=trackID,tracks.contains(where:{ $0.id == id }),let cue=try? newCue(language:.zh,at:time,trackID:id) {
+            var next=self; next.cues.append(cue); return (next,cue)
+        }
+        guard time>=0,time<duration else { throw SubtitleError.invalid(L("播放位置已在视频末尾")) }
+        var track=TextTrack(name:L("文字 {0}",[String(tracks.count+1)]))
+        if let base=tracks.first(where:{ $0.id == trackID }) { track.style=base.style }
+        let used=cues.filter { $0.trackID != nil && $0.start<=time && time<$0.end }.map { style(for:$0).y }
+        let heights=[0.8,0.65,0.5,0.35,0.2,0.9,0.1]
+        track.style.y=heights.first { y in used.allSatisfy { abs($0-y)>=0.1 } } ?? track.style.y
+        var next=self
+        next.textTracks=tracks+[track]
+        let cue=try next.newCue(language:.zh,at:time,trackID:track.id)
+        next.cues.append(cue)
+        return (next,cue)
+    }
     public func validate() throws {
         guard speed.isFinite,(0.25...2).contains(speed) else { throw SubtitleError.invalid(L("播放速度必须在 0.25 到 2 倍之间")) }
         try validateMusic()

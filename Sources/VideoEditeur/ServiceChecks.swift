@@ -732,7 +732,18 @@ func runMultilingualChecks() throws {
     RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.history.undo()
     RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.history.undo()
     guard listEditor.project == listed else { throw SubtitleError.invalid("Subtitle file delete undo failed") }
-    print("MULTILINGUAL_OK six pairs, subtitle-file and text-track delete from the list with confirm/cancel/undo, Claude/Codex routing, Claude login error, skipped empty/unusable translations, legacy settings, same-language transcription, cache isolation, retry, picker defaults/cancel and display labels (offline fixtures)")
+    // "Add Text" where the chosen track already shows text creates new tracks, so several texts show together.
+    listEditor.current=3500; listEditor.refresh(); listEditor.textTrackChoice.selectItem(at:0)
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.addTrackText()
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.addTrackText()
+    let shown=listEditor.project.active(at:3600).filter { $0.trackID != nil }
+    guard listEditor.project.tracks.count == 3,shown.count == 3,Set(shown.map { listEditor.project.style(for:$0).y }).count == 3,
+          shown.contains(where:{ $0.id == listEditor.selected }),
+          listEditor.textTrackChoice.indexOfSelectedItem == 2 else { throw SubtitleError.invalid("Multiple texts failed: tracks \(listEditor.project.tracks.count) shown \(shown.count)") }
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.history.undo()
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.history.undo()
+    guard listEditor.project == listed else { throw SubtitleError.invalid("Multiple texts undo failed") }
+    print("MULTILINGUAL_OK six pairs, subtitle-file and text-track delete from the list with confirm/cancel/undo, several texts at once via new tracks, Claude/Codex routing, Claude login error, skipped empty/unusable translations, legacy settings, same-language transcription, cache isolation, retry, picker defaults/cancel and display labels (offline fixtures)")
 }
 
 func runTimelineFileDropChecks() throws {
