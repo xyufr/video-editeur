@@ -62,6 +62,11 @@ public struct TextTrack: Codable, Equatable, Identifiable {
     public var id: UUID
     public var name: String
     public var style: SubtitleStyle
+    /// nil in older projects.
+    public var locked: Bool?
+    public var hidden: Bool?
+    public var isLocked: Bool { locked ?? false }
+    public var isHidden: Bool { hidden ?? false }
     public init(name: String) {
         id=UUID(); self.name=name; style=SubtitleStyle(); style.font="ArialMT"; style.y=0.8
     }
@@ -117,6 +122,30 @@ public struct Project: Codable, Equatable {
         let remaining=(removedSubtitleLanguages ?? []).filter { !languages.contains($0) }
         removedSubtitleLanguages=remaining.isEmpty ? nil : remaining
     }
+    /// Subtitle languages whose timeline row is locked against edits. nil in older projects.
+    public var lockedSubtitleLanguages: [Language]?
+    public func isLocked(_ language: Language) -> Bool { (lockedSubtitleLanguages ?? []).contains(language) }
+    public func isLocked(_ cue: Cue) -> Bool { cue.trackID.map { id in tracks.first { $0.id == id }?.isLocked ?? false } ?? isLocked(cue.language) }
+    public mutating func setLocked(_ locked: Bool, for language: Language) {
+        var languages=(lockedSubtitleLanguages ?? []).filter { $0 != language }
+        if locked { languages.append(language) }
+        lockedSubtitleLanguages=languages.isEmpty ? nil : languages
+    }
+    /// Whether a locked subtitle language or text track has different cues or style in `next`.
+    /// Video edits remap every cue, so they are checked by the caller separately.
+    public func lockedRowChanged(in next: Project) -> Bool {
+        for language in Language.allCases where isLocked(language) {
+            let row: (Project)->[Cue] = { p in p.cues.filter { $0.trackID == nil && $0.language == language } }
+            let style: (Project)->SubtitleStyle = { p in language == .fr ? p.frenchStyle : language == .zh ? p.chineseStyle : p.englishStyle ?? .standard(.en) }
+            if row(self) != row(next) || style(self) != style(next) || removedSubtitleLanguages != next.removedSubtitleLanguages && next.removedSubtitleLanguages?.contains(language) == true { return true }
+        }
+        for track in tracks where track.isLocked {
+            guard var candidate=next.tracks.first(where:{ $0.id == track.id }) else { return true }
+            candidate.locked=track.locked; candidate.hidden=track.hidden
+            if candidate != track || cues.filter({ $0.trackID == track.id }) != next.cues.filter({ $0.trackID == track.id }) { return true }
+        }
+        return false
+    }
     public var showFrench = true
     public var showChinese = true
     public init() {}
@@ -134,7 +163,7 @@ public struct Project: Codable, Equatable {
     public func sameTrack(_ a: Cue,_ b: Cue) -> Bool {
         a.trackID == b.trackID && (a.trackID != nil || a.language == b.language)
     }
-    public func visible(_ cue: Cue) -> Bool { cue.trackID != nil || visible(cue.language) }
+    public func visible(_ cue: Cue) -> Bool { cue.trackID.map { id in !(tracks.first { $0.id == id }?.isHidden ?? false) } ?? visible(cue.language) }
     public func visible(_ language: Language) -> Bool { language == .fr ? showFrench : (language == .en ? showEnglish ?? true : showChinese) }
     public mutating func setVisible(_ visible: Bool, for language: Language) {
         switch language { case .fr: showFrench=visible; case .zh: showChinese=visible; case .en: showEnglish=visible }

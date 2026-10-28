@@ -217,10 +217,12 @@ final class PreviewOverlay: NSView {
             ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.95).cgColor)
             ctx.setLineWidth(1); ctx.stroke(item.1.insetBy(dx:-4,dy:-4))
             ctx.setFillColor(NSColor.white.cgColor)
-            for point in handles(item.1) {
+            // A locked subtitle row shows only the outline: it cannot be moved or resized.
+            let locked=project.cues.first { $0.id == item.0 }.map { project.isLocked($0) } ?? false
+            for point in handles(item.1) where !locked {
                 ctx.fillEllipse(in:CGRect(x:point.x-4.5,y:point.y-4.5,width:9,height:9))
             }
-            for point in sideHandles(item.1) {
+            for point in sideHandles(item.1) where !locked {
                 let grip=CGRect(x:point.x-2.5,y:point.y-5,width:5,height:10)
                 ctx.addPath(CGPath(roundedRect:grip,cornerWidth:2.5,cornerHeight:2.5,transform:nil)); ctx.fillPath()
             }
@@ -256,8 +258,9 @@ final class PreviewOverlay: NSView {
         let r=videoRect
         if eraseMode { addCursorRect(r,cursor:.crosshair); return }
         for d in dividers { addCursorRect(dividerBand(d),cursor:d.vertical ? .resizeLeftRight : .resizeUpDown) }
-        for (_,box) in hitBoxes { addCursorRect(box.offsetBy(dx:r.minX,dy:r.minY),cursor:.openHand) }
-        if let hit=hitBoxes.first(where:{$0.0 == selected}) {
+        let locked=Set(project.cues.filter { project.isLocked($0) }.map(\.id))
+        for (id,box) in hitBoxes where !locked.contains(id) { addCursorRect(box.offsetBy(dx:r.minX,dy:r.minY),cursor:.openHand) }
+        if let hit=hitBoxes.first(where:{$0.0 == selected}),!locked.contains(hit.0) {
             let band=min(6,(hit.1.height+8)/4)
             for p in sideHandles(hit.1) { addCursorRect(CGRect(x:p.x+r.minX-10,y:p.y+r.minY-band,width:20,height:band*2),cursor:.resizeLeftRight) }
             for p in handles(hit.1) { addCursorRect(CGRect(x:p.x+r.minX-10,y:p.y+r.minY-band,width:20,height:band*2),cursor:.crosshair) }
@@ -281,6 +284,7 @@ final class PreviewOverlay: NSView {
         let hit=(onHandle || widthEdge != nil) ? selectedHit : hitBoxes.reversed().first(where:{$0.1.insetBy(dx:-6,dy:-6).contains(point)})
         guard let hit,let cue=project.cues.first(where:{$0.id == hit.0}) else { onDeselect?(); return }
         onSelect?(hit.0)
+        guard !project.isLocked(cue) else { return }
         gesture=Gesture(id:hit.0,style:project.style(for:cue),origin:point,center:CGPoint(x:hit.1.midX,y:hit.1.midY),resizing:onHandle,widthEdge:widthEdge,box:hit.1)
     }
     override func mouseDragged(with event: NSEvent) {
@@ -442,7 +446,10 @@ final class TimelineView: NSView {
     private var drag: (Cue,CGFloat,Int)?
     var toggleVideoTrackControl: ((Int)->Void)?
     var toggleLayerTrackControl: ((UUID,Int)->Void)?
+    /// Language row (language set) or text track (id set), then 0 for the lock or 1 for the eye.
+    var toggleSubtitleTrackControl: ((Language?,UUID?,Int)->Void)?
     private var layerButtons: [UUID:[NSButton]]=[:]
+    private var subtitleButtons: [String:[NSButton]]=[:]
     private var trackButtons: [NSButton]=[]
     override func layout() {
         super.layout()
@@ -469,9 +476,36 @@ final class TimelineView: NSView {
             let symbols=[layer.isLocked ? "lock.fill" : "lock.open",layer.hidden ? "eye.slash" : "eye",layer.muted ? "speaker.slash.fill" : "speaker.wave.2"]
             let labels=[L(layer.isLocked ? "解锁视频轨道" : "锁定视频轨道"),L(layer.hidden ? "显示视频轨道" : "隐藏视频轨道"),L(layer.muted ? "恢复视频原声" : "静音原视频")]
             for (i,button) in (layerButtons[id] ?? []).enumerated() {
-                button.frame=CGRect(x:5+CGFloat(i)*25,y:videoRowY(layer.id)+32,width:23,height:25)
+                button.frame=headerButtonFrame(i,row:videoRowY(layer.id),height:videoHeight)
                 let title=L("视频")+" \(project.layerTracks.count-row+1) · "+labels[i]
-                button.image=NSImage(systemSymbolName:symbols[i],accessibilityDescription:title)
+                button.image=headerSymbol(symbols[i],title)
+                button.toolTip=title; button.setAccessibilityLabel(title)
+                button.state=states[i] ? .on : .off; button.contentTintColor=states[i] ? accent : muted
+                button.isEnabled=editingEnabled
+            }
+        }
+        // Subtitle language rows and text tracks have a lock and an eye, keyed by language code or track ID.
+        var subtitleRows: [(key:String,title:String,locked:Bool,hidden:Bool)]=[]
+        if subtitleRowCount > 0 { for language in project.subtitleLanguages { subtitleRows.append((language.rawValue,language.rawValue.uppercased()+" · "+language.title,project.isLocked(language),!project.visible(language))) } }
+        for track in project.tracks { subtitleRows.append((track.id.uuidString,track.name,track.isLocked,track.isHidden)) }
+        for key in Array(subtitleButtons.keys) where !subtitleRows.contains(where:{ $0.key == key }) {
+            subtitleButtons.removeValue(forKey:key)?.forEach { $0.removeFromSuperview() }
+        }
+        for (row,entry) in subtitleRows.enumerated() {
+            if subtitleButtons[entry.key] == nil {
+                subtitleButtons[entry.key]=(0..<2).map { index in
+                    let button=NSButton(); button.tag=index; button.identifier=NSUserInterfaceItemIdentifier(entry.key)
+                    button.isBordered=false; button.setButtonType(.toggle); button.target=self; button.action=#selector(subtitleControlPressed(_:))
+                    button.imagePosition = .imageOnly; addSubview(button); return button
+                }
+            }
+            let states=[entry.locked,entry.hidden]
+            let symbols=[entry.locked ? "lock.fill" : "lock.open",entry.hidden ? "eye.slash" : "eye"]
+            let labels=[L(entry.locked ? "解锁字幕轨道" : "锁定字幕轨道"),L(entry.hidden ? "显示字幕轨道" : "隐藏字幕轨道")]
+            for (i,button) in (subtitleButtons[entry.key] ?? []).enumerated() {
+                button.frame=headerButtonFrame(i,row:subtitleRowY(row),height:40)
+                let title=entry.title+" · "+labels[i]
+                button.image=headerSymbol(symbols[i],title)
                 button.toolTip=title; button.setAccessibilityLabel(title)
                 button.state=states[i] ? .on : .off; button.contentTintColor=states[i] ? accent : muted
                 button.isEnabled=editingEnabled
@@ -480,8 +514,8 @@ final class TimelineView: NSView {
         let symbols=[project.isVideoLocked ? "lock.fill" : "lock.open",project.isVideoHidden ? "eye.slash" : "eye",project.isVideoMuted ? "speaker.slash.fill" : "speaker.wave.2"]
         let labels=[L(project.isVideoLocked ? "解锁视频轨道" : "锁定视频轨道"),L(project.isVideoHidden ? "显示视频轨道" : "隐藏视频轨道"),L(project.isVideoMuted ? "恢复视频原声" : "静音原视频")]
         for (i,button) in trackButtons.enumerated() {
-            button.frame=CGRect(x:5+CGFloat(i)*25,y:videoY+32,width:23,height:25)
-            button.image=NSImage(systemSymbolName:symbols[i],accessibilityDescription:labels[i])
+            button.frame=headerButtonFrame(i,row:videoY,height:videoHeight)
+            button.image=headerSymbol(symbols[i],labels[i])
             button.toolTip=labels[i]; button.setAccessibilityLabel(labels[i])
             let on=[project.isVideoLocked,project.isVideoHidden,project.isVideoMuted][i]
             button.state=on ? .on : .off; button.contentTintColor=on ? accent : muted
@@ -515,8 +549,24 @@ final class TimelineView: NSView {
         guard let raw=sender.identifier?.rawValue,let id=UUID(uuidString:raw) else { return }
         toggleLayerTrackControl?(id,sender.tag)
     }
+    /// Track header: each row has a card holding a coloured dot, the name and, below it, the track buttons,
+    /// centred vertically in the row.
+    func subtitleRowY(_ row: Int) -> CGFloat { 43+CGFloat(row)*44 }
+    private func headerCard(row: CGFloat, height: CGFloat) -> CGRect { CGRect(x:4,y:row,width:leading-10,height:height) }
+    private func headerContentTop(row: CGFloat, height: CGFloat, buttons: Bool) -> CGFloat { row+(height-(buttons ? 36 : 15))/2 }
+    private func headerButtonFrame(_ index: Int, row: CGFloat, height: CGFloat) -> CGRect {
+        CGRect(x:9+CGFloat(index)*21,y:headerContentTop(row:row,height:height,buttons:true)+18,width:20,height:18)
+    }
+    private func headerSymbol(_ name: String, _ description: String) -> NSImage? {
+        NSImage(systemSymbolName:name,accessibilityDescription:description)?.withSymbolConfiguration(.init(pointSize:11,weight:.regular))
+    }
     @objc private func trackControlPressed(_ sender: NSButton) { toggleVideoTrackControl?(sender.tag) }
-    var leading: CGFloat=InterfaceLanguage.current == .en ? 104 : 84
+    @objc private func subtitleControlPressed(_ sender: NSButton) {
+        guard let key=sender.identifier?.rawValue else { return }
+        if let language=Language(rawValue:key) { toggleSubtitleTrackControl?(language,nil,sender.tag) }
+        else if let id=UUID(uuidString:key) { toggleSubtitleTrackControl?(nil,id,sender.tag) }
+    }
+    var leading: CGFloat=InterfaceLanguage.current == .en ? 128 : 116
     override var acceptsFirstResponder: Bool { true }
     override var isFlipped: Bool { true }
     func x(_ ms: Int64) -> CGFloat { leading+CGFloat(ms)/1000*pointsPerSecond }
@@ -550,26 +600,55 @@ final class TimelineView: NSView {
     }
     override func draw(_ dirtyRect: NSRect) {
         NSColor(srgbRed:0.08,green:0.09,blue:0.105,alpha:1).setFill(); bounds.fill()
+        // Rows holding the selected cue or video clip get a band and an accent bar in the header.
+        var selectedRows: [ClosedRange<CGFloat>]=[]
+        if let cue=project.cues.first(where:{$0.id == selected && project.visible($0)}) { let r=rect(cue); selectedRows.append(r.minY-4...r.maxY+4) }
+        if let id=selectedClip,project.allClips.contains(where:{$0.id == id}) { let y=videoRowY(id); selectedRows.append(y...y+videoHeight) }
+        for row in selectedRows {
+            NSColor.white.withAlphaComponent(0.04).setFill()
+            CGRect(x:leading,y:row.lowerBound,width:bounds.width-leading,height:row.upperBound-row.lowerBound).fill()
+        }
         let paragraph=NSMutableParagraphStyle(); paragraph.lineBreakMode = .byTruncatingTail
         func text(_ s: String, _ rect: CGRect, _ color: NSColor = muted, _ size: CGFloat=10) {
             (s as NSString).draw(in:rect,withAttributes:[.font:NSFont.monospacedSystemFont(ofSize:size,weight:.medium),.foregroundColor:color,.paragraphStyle:paragraph])
         }
+        NSColor(srgbRed:0.10,green:0.11,blue:0.127,alpha:1).setFill(); CGRect(x:0,y:0,width:leading-2,height:bounds.height).fill()
+        NSColor.white.withAlphaComponent(0.06).setFill(); CGRect(x:leading-2,y:0,width:1,height:bounds.height).fill()
+        func header(_ title: String, row: CGFloat, height: CGFloat, color: NSColor, buttons: Bool, dimmed: Bool=false) {
+            let card=headerCard(row:row,height:height)
+            let selected=selectedRows.contains { abs($0.lowerBound-row)<6 }
+            (selected ? accent.withAlphaComponent(0.16) : NSColor.white.withAlphaComponent(0.035)).setFill()
+            NSBezierPath(roundedRect:card,xRadius:6,yRadius:6).fill()
+            if selected { accent.setFill(); NSBezierPath(roundedRect:CGRect(x:card.minX,y:card.minY+6,width:3,height:card.height-12),xRadius:1.5,yRadius:1.5).fill() }
+            let top=headerContentTop(row:row,height:height,buttons:buttons)
+            color.withAlphaComponent(dimmed ? 0.4 : 1).setFill(); NSBezierPath(ovalIn:CGRect(x:card.minX+8,y:top+4.5,width:6,height:6)).fill()
+            let label=NSColor.white.withAlphaComponent(selected ? 1 : dimmed ? 0.4 : 0.8)
+            (title as NSString).draw(in:CGRect(x:card.minX+19,y:top,width:card.width-23,height:15),withAttributes:[.font:NSFont.systemFont(ofSize:11,weight:.semibold),.foregroundColor:label,.paragraphStyle:paragraph])
+        }
+        let videoColor=NSColor(srgbRed:0.20,green:0.77,blue:0.79,alpha:1)
+        if subtitleRowCount > 0 {
+            for (i,language) in project.subtitleLanguages.enumerated() {
+                header(language.rawValue.uppercased()+" · "+language.title,row:subtitleRowY(i),height:40,color:language == .fr ? NSColor(srgbRed:0.48,green:0.43,blue:0.85,alpha:1) : NSColor(srgbRed:0.87,green:0.50,blue:0.34,alpha:1),buttons:true,dimmed:!project.visible(language))
+            }
+        }
+        for (i,track) in project.tracks.enumerated() { header(track.name,row:subtitleRowY(subtitleRowCount+i),height:40,color:.systemTeal,buttons:true,dimmed:track.isHidden) }
+        header(L("视频")+" 1",row:videoY,height:videoHeight,color:videoColor,buttons:true,dimmed:project.isVideoHidden)
+        for (i,track) in project.layerTracks.enumerated() {
+            header(L("视频")+" \(project.layerTracks.count-i+1)",row:videoRowY(track[0].id),height:videoHeight,color:videoColor,buttons:true,dimmed:track[0].hidden)
+        }
+        for (i,music) in project.music.enumerated() { header(L("音乐")+" \(i+1)",row:musicRect(music).minY,height:32,color:.systemGreen,buttons:false) }
         let step: Int = pointsPerSecond > 45 ? 1 : (pointsPerSecond > 15 ? 5 : 10)
         let first=max(0,Int((dirtyRect.minX-leading)/pointsPerSecond)/step*step), last=min(Int(project.timelineExtent/1000)+1,Int((dirtyRect.maxX-leading)/pointsPerSecond)+1)
         if first <= last { for sec in stride(from:first,through:last,by:step) {
             let px=x(Int64(sec)*1000); NSColor(white:0.23,alpha:1).setFill(); CGRect(x:px,y:28,width:1,height:bounds.height-28).fill()
             text(String(format:"%02d:%02d",sec/60,sec%60),CGRect(x:px+4,y:8,width:55,height:16))
         } }
-        if subtitleRowCount > 0 {
-            for (i,language) in project.subtitleLanguages.enumerated() { text(language.rawValue.uppercased()+" · "+language.title,CGRect(x:10,y:55+CGFloat(i)*44,width:70,height:20)) }
-        }
-        text(L("视频")+" 1",CGRect(x:10,y:videoY+14,width:70,height:20))
-        for (i,track) in project.tracks.enumerated() { text(track.name,CGRect(x:10,y:55+CGFloat(subtitleRowCount+i)*44,width:70,height:20),accent) }
-        for cue in project.cues where project.visible(cue) && rect(cue).intersects(dirtyRect) {
+        // Hidden rows stay on the timeline, dimmed, like hidden video tracks.
+        for cue in project.cues where (cue.trackID != nil || subtitleRowCount > 0) && rect(cue).intersects(dirtyRect) {
             let r=rect(cue); let visible=project.visible(cue)
-            (cue.trackID != nil ? NSColor.systemTeal : cue.language == .fr ? NSColor(srgbRed:0.35,green:0.31,blue:0.61,alpha:visible ? 1:0.35) : NSColor(srgbRed:0.65,green:0.36,blue:0.24,alpha:visible ? 1:0.35)).setFill()
+            (cue.trackID != nil ? NSColor.systemTeal.withAlphaComponent(visible ? 1:0.35) : cue.language == .fr ? NSColor(srgbRed:0.35,green:0.31,blue:0.61,alpha:visible ? 1:0.35) : NSColor(srgbRed:0.65,green:0.36,blue:0.24,alpha:visible ? 1:0.35)).setFill()
             NSBezierPath(roundedRect:r,xRadius:5,yRadius:5).fill()
-            text(cue.text,r.insetBy(dx:7,dy:8),.white,11)
+            text(cue.text,r.insetBy(dx:7,dy:8),.white.withAlphaComponent(visible ? 1:0.5),11)
 
         }
         for p in project.renderPlacements {
@@ -618,10 +697,6 @@ final class TimelineView: NSView {
             }
             NSGraphicsContext.restoreGraphicsState()
         }
-        for (i,track) in project.layerTracks.enumerated() {
-            let layer=track[0]
-            text(L("视频")+" \(project.layerTracks.count-i+1)",CGRect(x:5,y:videoRowY(layer.id)+4,width:leading-10,height:25),accent)
-        }
         let dropRect=CGRect(x:leading,y:newLayerY,width:max(10,bounds.width-leading),height:48)
         NSColor.systemTeal.withAlphaComponent(layerDropTime == nil ? 0.07 : 0.25).setFill(); dropRect.fill()
         text(L("拖动视频到此处新建视频轨道"),dropRect.insetBy(dx:12,dy:14),accent)
@@ -658,16 +733,15 @@ final class TimelineView: NSView {
             NSColor.white.setStroke()
             let border=NSBezierPath(roundedRect:r.insetBy(dx:-1,dy:-1),xRadius:4,yRadius:4)
             border.lineWidth=2; border.stroke()
-            for left in [true,false] {
+            for left in [true,false] where !project.isLocked(cue) {
                 let handle=edgeHandle(cue,left:left)
                 NSColor.white.setFill(); NSBezierPath(roundedRect:handle,xRadius:3,yRadius:3).fill()
                 NSColor.black.withAlphaComponent(0.65).setFill()
                 CGRect(x:handle.midX-1,y:handle.midY-6,width:2,height:12).fill()
             }
         }
-        for (i,music) in project.music.enumerated() {
+        for music in project.music {
             let r=musicRect(music)
-            text(L("音乐")+" \(i+1)",CGRect(x:8,y:r.minY+8,width:leading-12,height:20),muted,10)
             NSColor.systemGreen.withAlphaComponent(0.55).setFill(); NSBezierPath(roundedRect:r,xRadius:4,yRadius:4).fill()
             text(URL(fileURLWithPath:music.path).lastPathComponent,r.insetBy(dx:7,dy:7),.white,11)
             if music.id == selectedMusic { NSColor.white.setStroke(); let border=NSBezierPath(rect:r.insetBy(dx:1,dy:1)); border.lineWidth=2; border.stroke() }
@@ -685,6 +759,13 @@ final class TimelineView: NSView {
         }
         let px=x(current); accent.setFill(); CGRect(x:px,y:29,width:1.5,height:bounds.height-29).fill()
         let head=NSBezierPath(); head.move(to:CGPoint(x:px-5,y:25)); head.line(to:CGPoint(x:px+5,y:25)); head.line(to:CGPoint(x:px,y:33)); head.close(); head.fill()
+    }
+    /// Clicking a track name selects that row's clip at the playhead, or its first clip.
+    func selectRow(at y: CGFloat) {
+        let cues=project.cues.filter { project.visible($0) && (rect($0).minY-6..<rect($0).maxY+6).contains(y) }.sorted { $0.start<$1.start }
+        if let cue=cues.first(where:{ $0.start<=current && current<$0.end }) ?? cues.first { select?(cue.id); return }
+        let clips=project.renderPlacements.filter { (videoRowY($0.clip.id)..<videoRowY($0.clip.id)+videoHeight).contains(y) }.sorted { $0.start<$1.start }
+        if let p=clips.first(where:{ $0.start<=current && current<$0.end }) ?? clips.first { selectVideo?(p.clip.id); selectedClip=p.clip.id; needsDisplay=true }
     }
     func musicRect(_ music: BackgroundMusic) -> CGRect {
         let index=project.music.firstIndex(where:{$0.id == music.id}) ?? 0
@@ -714,14 +795,15 @@ final class TimelineView: NSView {
             else if !project.isVideoLocked { videoDrag=(p.clip,point.x,mode) }
             needsDisplay=true; return
         }
+        if p.x<leading,p.y>32 { selectRow(at:p.y); return }
         if let cue=project.cues.first(where:{$0.id == selected && project.visible($0)}),
            edgeHandle(cue,left:true).contains(p) || edgeHandle(cue,left:false).contains(p) {
             let left=abs(p.x-rect(cue).minX) <= abs(p.x-rect(cue).maxX)
-            select?(cue.id); drag=(cue,p.x,left ? -1 : 1)
+            select?(cue.id); if !project.isLocked(cue) { drag=(cue,p.x,left ? -1 : 1) }
         } else if let cue=project.cues.first(where:{project.visible($0) && rect($0).contains(p)}) {
             select?(cue.id); let r=rect(cue)
             let edge=min(7,r.width/3)
-            drag=(cue,p.x,p.x-r.minX < edge ? -1 : (r.maxX-p.x < edge ? 1 : 0))
+            if !project.isLocked(cue) { drag=(cue,p.x,p.x-r.minX < edge ? -1 : (r.maxX-p.x < edge ? 1 : 0)) }
         } else { seek?(ms(p.x)); if p.y>32 { onDeselect?() } }
     }
     override func mouseDragged(with event: NSEvent) {

@@ -38,6 +38,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         let saved=UserDefaults.standard.double(forKey:"editor.timelineHeight")
         return saved.isFinite && saved >= 140 ? CGFloat(saved) : 260
     }()
+    /// Not shown: remembers the target text track, following the selected text clip.
     let textTrackChoice=NSPopUpButton()
     let timeline=TimelineView(), timelineScroll=TimelineScrollView()
     let titleLabel=label(L("字幕工坊"),size:18,bold:true), subtitleLabel=label(L("多语言字幕 · 本地视频工作台"),size:10,color:muted)
@@ -50,7 +51,6 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     let emptyHint=label(L("拖入视频，选择语言生成字幕"),size:13,color:muted)
     let progress=NSProgressIndicator(), scrub=NSSlider(), zoom=NSSlider()
     var importButton: ActionButton!, generateButton: ActionButton!, exportButton: ActionButton!, cancelButton: ActionButton!, playButton: ActionButton!
-    let displayMode=NSSegmentedControl(labels:[L("法语"),L("中文")],trackingMode:.selectAny,target:nil,action:nil)
     let languageChoice=NSSegmentedControl(labels:[L("素材"),L("字幕"),L("本地素材库")],trackingMode:.selectOne,target:nil,action:nil)
     let panelToggles=NSSegmentedControl(labels:[L("素材"), L("时间轴"), L("字幕属性")],trackingMode:.selectAny,target:nil,action:nil)
     private let panelKeys=["editor.showMedia", "editor.showTimeline", "editor.showInspector"]
@@ -160,8 +160,6 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         overlay.onEraseSelected={[weak self] in self?.statusLabel.stringValue=L("已框选区域 · 按 Delete 设置背景覆盖，Esc 取消") }
         overlay.onEraseCancelled={[weak self] in self?.cancelRegionErase(); self?.statusLabel.stringValue=L("已取消区域框选") }
         center.addSubview(emptyTitle); center.addSubview(emptyHint)
-        let previewTitle=label(L("预览"),size:12,color:muted); previewTitle.identifier=NSUserInterfaceItemIdentifier("previewTitle"); center.addSubview(previewTitle)
-        displayMode.target=self; displayMode.action=#selector(modeChanged(_:)); center.addSubview(displayMode)
         playButton=ActionButton("",symbol:"play.fill",action:{[weak self] in self?.togglePlay()}); center.addSubview(playButton)
         playbackSpeedChoice.addItems(withTitles:playbackSpeeds.map{String(format:"%g×",$0)})
         playbackSpeedChoice.selectItem(at:3); playbackSpeedChoice.target=self; playbackSpeedChoice.action=#selector(playbackSpeedChanged(_:))
@@ -199,6 +197,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         }
         timeline.moveVideoLayer={[weak self] layer in self?.updateVideoLayer(layer) }
         timeline.toggleLayerTrackControl={[weak self] id,control in self?.toggleLayerTrackControl(id,control) }
+        timeline.toggleSubtitleTrackControl={[weak self] language,id,control in self?.toggleSubtitleTrackControl(language:language,trackID:id,control:control) }
         timeline.selectVideo={[weak self] id in self?.selectVideoClip(id) }
         timeline.editVideoTrack={[weak self] id,action in self?.editVideoTrack(id,action) }
         timeline.editVideoRange={[weak self] id,start,end in
@@ -241,10 +240,8 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         setupInspector()
         let timelineTitle=label(L("时间轴"),size:12,bold:true); timelineTitle.identifier=NSUserInterfaceItemIdentifier("timelineTitle"); bottom.addSubview(timelineTitle)
         let tip=label(L("拖动片段调整时间 · 拖动边缘调整时长"),size:10,color:muted); tip.identifier=NSUserInterfaceItemIdentifier("timelineTip"); bottom.addSubview(tip)
-        let newTrack=ActionButton(L("新建文字轨道"),symbol:"plus",action:{[weak self] in self?.addTextTrack()}); newTrack.identifier=NSUserInterfaceItemIdentifier("newTrack"); bottom.addSubview(newTrack)
         let newText=ActionButton(L("添加文字"),symbol:"text.badge.plus",action:{[weak self] in self?.addTrackText()}); newText.identifier=NSUserInterfaceItemIdentifier("newText"); bottom.addSubview(newText)
-        let deleteTrack=ActionButton(L("删除轨道"),symbol:"trash",action:{[weak self] in self?.deleteTextTrack()}); deleteTrack.identifier=NSUserInterfaceItemIdentifier("deleteTrack"); deleteTrack.toolTip=L("删除所选文字轨道及全部文字片段（⌘Z 可撤销）"); bottom.addSubview(deleteTrack)
-        textTrackChoice.setAccessibilityLabel(L("目标文字轨道")); bottom.addSubview(textTrackChoice)
+        let deleteTrack=ActionButton(L("删除轨道"),symbol:"trash",action:{[weak self] in self?.deleteSelectedTrack()}); deleteTrack.identifier=NSUserInterfaceItemIdentifier("deleteTrack"); deleteTrack.toolTip=L("删除选中片段所在轨道及其全部片段（⌘Z 可撤销）"); bottom.addSubview(deleteTrack)
         timelineScroll.applyScrollers()
         zoom.minValue=5; zoom.maxValue=150; zoom.doubleValue=65; zoom.target=self; zoom.action=#selector(zoomChanged); bottom.addSubview(zoom)
         setupMusicControls()
@@ -377,9 +374,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         left.subviews.first{$0.identifier?.rawValue == "add"}?.frame=NSRect(x:12,y:47,width:90,height:30)
         left.subviews.first{$0.identifier?.rawValue == "delete"}?.frame=NSRect(x:110,y:47,width:34,height:30)
         let cw=center.bounds.width
-        center.subviews.first{$0.identifier?.rawValue == "previewTitle"}?.frame=NSRect(x:16,y:paneH-33,width:80,height:20)
-        displayMode.frame=NSRect(x:cw-188,y:paneH-35,width:173,height:25)
-        preview.frame=NSRect(x:10,y:80,width:cw-20,height:max(100,paneH-128)); overlay.frame=preview.frame
+        preview.frame=NSRect(x:10,y:80,width:cw-20,height:max(100,paneH-90)); overlay.frame=preview.frame
         emptyTitle.frame=NSRect(x:20,y:paneH/2+6,width:cw-40,height:35); emptyTitle.alignment = .center
         emptyHint.frame=NSRect(x:20,y:paneH/2-26,width:cw-40,height:24); emptyHint.alignment = .center
         playButton.frame=NSRect(x:14,y:10,width:38,height:30)
@@ -396,13 +391,11 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         bottom.frame=NSRect(x:margin,y:statusH,width:w-20,height:bottomH)
         bottom.subviews.first{$0.identifier?.rawValue == "timelineTitle"}?.frame=NSRect(x:15,y:bottomH-32,width:70,height:20)
         bottom.subviews.first{$0.identifier?.rawValue == "timelineTip"}?.frame=NSRect(x:89,y:bottomH-31,width:0,height:20)
-        bottom.subviews.first{$0.identifier?.rawValue == "newTrack"}?.frame=NSRect(x:90,y:bottomH-35,width:136,height:28)
-        textTrackChoice.frame=NSRect(x:235,y:bottomH-35,width:140,height:28)
-        bottom.subviews.first{$0.identifier?.rawValue == "newText"}?.frame=NSRect(x:383,y:bottomH-35,width:112,height:28)
-        bottom.subviews.first{$0.identifier?.rawValue == "deleteTrack"}?.frame=NSRect(x:503,y:bottomH-35,width:112,height:28)
-        bottom.subviews.first{$0.identifier?.rawValue == "clipEdit"}?.frame=NSRect(x:625,y:bottomH-35,width:148,height:28)
+        bottom.subviews.first{$0.identifier?.rawValue == "newText"}?.frame=NSRect(x:90,y:bottomH-35,width:112,height:28)
+        bottom.subviews.first{$0.identifier?.rawValue == "deleteTrack"}?.frame=NSRect(x:210,y:bottomH-35,width:112,height:28)
+        bottom.subviews.first{$0.identifier?.rawValue == "clipEdit"}?.frame=NSRect(x:332,y:bottomH-35,width:148,height:28)
         for (index,name) in ["splitVideo","trimVideoLeft","trimVideoRight","endTogether"].enumerated() {
-            bottom.subviews.first{$0.identifier?.rawValue == name}?.frame=NSRect(x:781+CGFloat(index)*33,y:bottomH-35,width:30,height:28)
+            bottom.subviews.first{$0.identifier?.rawValue == name}?.frame=NSRect(x:488+CGFloat(index)*33,y:bottomH-35,width:30,height:28)
         }
         zoom.frame=NSRect(x:bottom.bounds.width-175,y:bottomH-33,width:156,height:24)
         timelineScroll.frame=NSRect(x:0,y:0,width:bottom.bounds.width,height:bottomH-44); resizeTimeline()
@@ -584,15 +577,10 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         }
         if let chosen,let item=textTrackChoice.itemArray.first(where:{$0.representedObject as? UUID == chosen}) { textTrackChoice.select(item) }
         textTrackChoice.isEnabled = !busy && !project.tracks.isEmpty
-        (bottom.subviews.first{$0.identifier?.rawValue == "deleteTrack"} as? NSButton)?.isEnabled = !busy && !project.tracks.isEmpty
-        for v in bottom.subviews where ["newTrack","newText"].contains(v.identifier?.rawValue ?? "") { (v as? NSButton)?.isEnabled = !busy && project.duration > 0 }
+        (bottom.subviews.first{$0.identifier?.rawValue == "deleteTrack"} as? NSButton)?.isEnabled = !busy && (!project.cues.isEmpty || !project.allClips.isEmpty || !project.music.isEmpty)
+        for v in bottom.subviews where v.identifier?.rawValue == "newText" { (v as? NSButton)?.isEnabled = !busy && project.duration > 0 }
         timeline.project=project; timeline.selectedClip=selectedClip; timeline.selected=selected; timeline.current=current; resizeTimeline()
         emptyTitle.isHidden = !project.videoPath.isEmpty; emptyHint.isHidden=emptyTitle.isHidden
-        for control in [displayMode] {
-            control.segmentCount=project.subtitleLanguages.count
-            for (i,language) in project.subtitleLanguages.enumerated() { control.setLabel(language.title,forSegment:i); control.setSelected(project.visible(language),forSegment:i) }
-            control.isEnabled = !busy
-        }
         languageChoice.isEnabled = !busy
         (left.subviews.first{$0.identifier?.rawValue == "delete"})?.isHidden=showsGrid
         (header.subviews.first{$0.identifier?.rawValue == "newProject"} as? NSButton)?.isEnabled = !busy
@@ -617,11 +605,11 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     }
     func refreshInspector() {
         inspectorUpdating=true; defer { inspectorUpdating=false }
-        let enabled = !busy && project.cues.contains{$0.id == selected}
+        let enabled = !busy && project.cues.contains{$0.id == selected && !project.isLocked($0)}
         for control in [alignmentChoice,fontChoice,startField,endField,sizeField,widthField,outlineField,xField,yField,textColor,outlineColor,backgroundColor,backgroundEnabled,readabilityEnabled] as [NSControl] { control.isEnabled=enabled }
         for button in inspector.arrangedSubviews.compactMap({$0 as? NSButton}) { button.isEnabled=enabled }
         guard let cue=project.cues.first(where:{$0.id == selected}) else { selectionLabel.stringValue=L("选择字幕开始编辑"); textEditor.string=""; textEditor.isEditable=false; return }
-        textEditor.isEditable = !busy; selectionLabel.stringValue="\(project.tracks.first(where:{$0.id == cue.trackID})?.name ?? (cue.language.title+" · "+L("字幕"))) · \(cue.style == nil ? L("轨道样式") : L("自定义样式"))"
+        textEditor.isEditable=enabled; selectionLabel.stringValue="\(project.tracks.first(where:{$0.id == cue.trackID})?.name ?? (cue.language.title+" · "+L("字幕"))) · \(cue.style == nil ? L("轨道样式") : L("自定义样式"))"
         textEditor.string=cue.text; startField.stringValue=String(format:"%.3f",Double(cue.start)/1000); endField.stringValue=String(format:"%.3f",Double(cue.end)/1000)
         let s=project.style(for:cue); let family=NSFont(name:s.font,size:12)?.familyName ?? s.font
         if fontChoice.itemTitles.contains(family) { fontChoice.selectItem(withTitle:family) }
@@ -642,6 +630,10 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
                 candidate.locked=old.locked; candidate.hidden=old.hidden; candidate.muted=old.muted
                 guard candidate == old else { showError(SubtitleError.invalid(L("视频轨道已锁定，请先解锁"))); refresh(); return }
             }
+        }
+        // Video edits remap every cue, so locked subtitle rows only block edits that keep the video unchanged.
+        if !history.isUndoing && !history.isRedoing && next.clips == project.clips && next.layers == project.layers && project.lockedRowChanged(in:next) {
+            showError(SubtitleError.invalid(L("字幕轨道已锁定，请先解锁"))); refresh(); refreshInspector(); return
         }
         do { try next.validate() } catch { showError(error); refreshInspector(); return }
         let old=project
@@ -723,6 +715,9 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     func deleteLibraryEntry(_ entry: LibraryEntry,confirm: Bool=true) {
         guard !busy else { return }
         view.window?.makeFirstResponder(nil); pauseForEditing()
+        if entry.language.map({ project.isLocked($0) }) ?? project.tracks.contains(where:{ $0.id == entry.trackID && $0.isLocked }) {
+            showError(SubtitleError.invalid(L("字幕轨道已锁定，请先解锁"))); return
+        }
         let count=project.cues.filter { entry.contains($0) }.count
         if confirm {
             let alert=NSAlert(); alert.alertStyle = .warning
@@ -740,29 +735,40 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         commit(next,name:entry.language != nil ? L("删除字幕文件") : L("删除文字轨道")); refreshInspector()
         statusLabel.stringValue=L("已删除 {0} · {1} 条字幕 · ⌘Z 撤销",[entry.title,String(count)])
     }
-    func deleteTextTrack() {
-        guard !busy,let id=textTrackChoice.selectedItem?.representedObject as? UUID,
-              project.tracks.contains(where:{$0.id == id}) else { return }
-        view.window?.makeFirstResponder(nil)
-        pauseForEditing()
-        var next=project
-        next.cues.removeAll{$0.trackID == id}
-        next.textTracks=next.tracks.filter{$0.id != id}
-        if let selected,!next.cues.contains(where:{$0.id == selected}) { self.selected=nil }
-        commit(next,name:L("删除文字轨道")); refreshInspector()
+    /// Lock (control 0) or eye (control 1) of a subtitle language row or a text track. The eye of a language
+    /// sets whether it shows in the preview and export.
+    func toggleSubtitleTrackControl(language: Language?, trackID: UUID?, control: Int) {
+        guard !busy else { return }
+        pauseForEditing(); var next=project
+        if let id=trackID,let i=project.tracks.firstIndex(where:{ $0.id == id }) {
+            if control == 0 { next.textTracks?[i].locked=project.tracks[i].isLocked ? nil : true }
+            else { next.textTracks?[i].hidden=project.tracks[i].isHidden ? nil : true }
+        } else if let language {
+            if control == 0 { next.setLocked(!project.isLocked(language),for:language) }
+            else { next.setVisible(!project.visible(language),for:language) }
+        } else { return }
+        commit(next,name:control == 0 ? L("锁定字幕轨道") : L("隐藏字幕轨道")); followCurrentSubtitles(); refreshInspector()
     }
-    func addTextTrack() {
-        guard !busy,project.duration > 0 else { return }
-        pauseForEditing()
-        do {
-            var next=project
-            let track=TextTrack(name:L("文字 {0}", [String(describing: next.tracks.count+1)]))
-            next.textTracks=next.tracks+[track]
-            let cue=try next.newCue(language:.zh,at:min(current,max(0,next.duration-2000)),trackID:track.id)
-            next.cues.append(cue); commit(next,name:L("新建文字轨道"))
-            textTrackChoice.selectItem(at:next.tracks.count-1); select(cue.id)
-            timeline.scrollToVisible(timeline.rect(cue))
-        } catch { showError(error) }
+    /// Deletes the timeline row of the selection: a subtitle language (after confirmation), a text track,
+    /// an additional video track or a music clip. The main video track is kept.
+    func deleteSelectedTrack() {
+        guard !busy else { return }
+        if let cue=project.cues.first(where:{ $0.id == selected }) {
+            if let id=cue.trackID,let track=project.tracks.first(where:{ $0.id == id }) {
+                deleteLibraryEntry(LibraryEntry(title:track.name,detail:"",language:nil,trackID:id),confirm:false)
+            } else {
+                deleteLibraryEntry(LibraryEntry(title:cue.language.title+" · "+L("字幕"),detail:"",language:cue.language,trackID:nil))
+            }
+        } else if let layer=targetLayer {
+            guard !layer.isLocked else { statusLabel.stringValue=L("视频轨道已锁定，请先解锁"); return }
+            editVideoTrack(layer.trackIdentifier,0); selectedClip=nil; timeline.selectedClip=nil; refreshInspector()
+        } else if selectedClip != nil {
+            statusLabel.stringValue=L("主视频轨道不能删除，可删除其中的片段")
+        } else if selectedMusic != nil {
+            deleteMusic(); selectedMusic=nil; timeline.selectedMusic=nil
+        } else {
+            statusLabel.stringValue=L("请先选中要删除的轨道")
+        }
     }
     /// Adds a text at the playhead. If the chosen track already shows a text there, a new text track is
     /// created instead, so several texts can be on screen at the same time.
@@ -770,7 +776,8 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         guard !busy,project.duration > 0 else { return }
         pauseForEditing()
         do {
-            let chosen=textTrackChoice.selectedItem?.representedObject as? UUID
+            // A locked track never gets new text; a new track is created instead.
+            let chosen=(textTrackChoice.selectedItem?.representedObject as? UUID).flatMap { id in project.tracks.first { $0.id == id && !$0.isLocked }?.id }
             let (next,cue)=try project.addingText(at:current,trackID:chosen)
             let created=next.tracks.count>project.tracks.count
             commit(next,name:created ? L("新建文字轨道") : L("添加文字"))
@@ -789,12 +796,6 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         do { let cue=try project.newCue(language:language,at:current); var next=project; next.cues.append(cue); commit(next,name:L("添加字幕")); select(cue.id) } catch { showError(error) }
     }
     func deleteSubtitle() { guard !busy,let id=selected else { return }; var next=project; next.cues.removeAll{$0.id == id}; selected=nil; commit(next,name:L("删除字幕")); refreshInspector() }
-    @objc func modeChanged(_ sender: NSSegmentedControl) {
-        guard !busy else { refresh(); return }
-        var next=project; for (i,language) in project.subtitleLanguages.enumerated() { next.setVisible(sender.isSelected(forSegment:i),for:language) }
-        if sender.selectedSegment >= 0, sender.isSelected(forSegment:sender.selectedSegment) { preferredLanguage=project.subtitleLanguages[sender.selectedSegment] }
-        commit(next,name:L("切换字幕显示")); followCurrentSubtitles(); refreshInspector()
-    }
     @objc func zoomChanged() { timeline.pointsPerSecond=zoom.doubleValue; resizeTimeline() }
     @objc func scrubChanged() { seek(Int64(scrub.doubleValue)) }
     func seek(_ ms: Int64) { current=max(0,min(project.duration,ms)); player.seek(to:CMTime(value:current,timescale:1000),toleranceBefore:.zero,toleranceAfter:.zero); followCurrentSubtitles(); refreshPlayback() }

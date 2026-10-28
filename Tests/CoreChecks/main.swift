@@ -675,5 +675,31 @@ check("Legacy project and same-language generation keep compatible track counts"
     let old=try JSONDecoder().decode(Project.self,from:JSONSerialization.data(withJSONObject:json))
     return old.subtitleLanguages == [.fr,.zh] && old.visible(.en)
 }
+check("Locked and hidden text tracks and locked languages survive saving; older projects decode unlocked") {
+    var q=p; var track=TextTrack(name:"T"); track.locked=true; track.hidden=true; q.textTracks=[track]
+    q.cues.append(Cue(language:.zh,start:0,end:1000,text:"文字",trackID:track.id)); q.setLocked(true,for:.fr)
+    let restored=try JSONDecoder().decode(Project.self,from:JSONEncoder().encode(q))
+    var legacy=try JSONSerialization.jsonObject(with:JSONEncoder().encode(q)) as! [String:Any]
+    legacy.removeValue(forKey:"lockedSubtitleLanguages")
+    legacy["textTracks"]=(legacy["textTracks"] as! [[String:Any]]).map { var t=$0; t.removeValue(forKey:"locked"); t.removeValue(forKey:"hidden"); return t }
+    let old=try JSONDecoder().decode(Project.self,from:JSONSerialization.data(withJSONObject:legacy))
+    return restored == q && restored.isLocked(.fr) && !restored.isLocked(.zh) && restored.isLocked(q.cues.last!)
+        && !restored.visible(q.cues.last!) && restored.active(at:500).allSatisfy { $0.trackID == nil }
+        && !old.isLocked(.fr) && !old.tracks[0].isLocked && old.visible(q.cues.last!)
+}
+check("Locked rows reject cue, style and delete changes but allow lock toggles and other rows") {
+    var q=p; let track=TextTrack(name:"T"); q.textTracks=[track]
+    q.cues.append(Cue(language:.zh,start:0,end:1000,text:"文字",trackID:track.id))
+    q.setLocked(true,for:.fr); q.textTracks![0].locked=true
+    var moved=q; moved.cues[0].start=100
+    var styled=q; styled.frenchStyle.size=40
+    var trackStyled=q; trackStyled.textTracks![0].style.size=40
+    var hidden=q; hidden.textTracks![0].hidden=true
+    var unlocked=q; unlocked.setLocked(false,for:.fr)
+    var other=q; other.cues.append(Cue(language:.zh,start:0,end:1000,text:"中"))
+    return q.lockedRowChanged(in:moved) && q.lockedRowChanged(in:styled) && q.lockedRowChanged(in:trackStyled)
+        && q.lockedRowChanged(in:q.removingSubtitleLanguage(.fr)) && !q.lockedRowChanged(in:hidden)
+        && !q.lockedRowChanged(in:unlocked) && !q.lockedRowChanged(in:other) && !q.lockedRowChanged(in:q.removingSubtitleLanguage(.zh))
+}
 print("\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0:1)

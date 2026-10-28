@@ -73,3 +73,5 @@ open dist/VideoEditeur.app
 - 字幕列表可删除某语言字幕文件：删除该语言全部非文字轨道字幕，并以可选 `removedSubtitleLanguages` 隐藏时间轴行（旧工程为 nil）；该语言重新出现字幕或重新生成时恢复，样式保留。
 
 - 字幕生成源语言支持 fr/en，目标支持 zh/en/fr，默认 fr→zh；同语言仅转写。generationLanguages、英语样式及显示状态使用可选字段兼容旧工程。任务缓存按 languages.json 校验，不跨语言复用；多语言 skill 源码位于 Assets/Skills/video-generate-multilingual-subtitles，打包至 Resources/SubtitleSkill。
+
+- 时间轴表头：字幕语言行与文字轨道有锁/眼睛（`TextTrack` 可选 `locked`/`hidden`，工程可选 `lockedSubtitleLanguages`，旧工程为未锁定、可见）。锁定行在视频片段未变化时拒绝修改字幕、样式、添加和删除，视频剪辑仍重映射时间；语言眼睛即 `showFrench`/`showChinese`/`showEnglish`，预览不再有语言分段开关。隐藏文字轨道不进入 `active(at:)`。“删除轨道” 按选中片段所在行删除，主视频轨道不删除。

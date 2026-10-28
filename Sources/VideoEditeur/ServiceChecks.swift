@@ -285,6 +285,34 @@ func runSplitScreenChecks(directory: URL) throws {
         laterEditor.bottom.cacheDisplay(in:laterEditor.bottom.bounds,to:bitmap)
         try? bitmap.representation(using:.png,properties:[:])?.write(to:URL(fileURLWithPath:"/tmp/split-end-toolbar-\(InterfaceLanguage.current.rawValue).png"))
     }
+    if let bitmap=laterEditor.view.bitmapImageRepForCachingDisplay(in:laterEditor.view.bounds) {
+        laterEditor.view.cacheDisplay(in:laterEditor.view.bounds,to:bitmap)
+        try? bitmap.representation(using:.png,properties:[:])?.write(to:URL(fileURLWithPath:"/tmp/editor-window-\(InterfaceLanguage.current.rawValue).png"))
+    }
+    // Selected text and video-track rows are highlighted in the timeline.
+    // Clicking track names in the timeline header selects the row's clips, which the row style then shows.
+    laterEditor.current=500; laterEditor.addTrackText()
+    let text=laterEditor.selected!; laterEditor.clearSelection()
+    let timelineView=laterEditor.timeline
+    timelineView.selectRow(at:timelineView.rect(laterEditor.project.cues.first{$0.id == text}!).midY)
+    guard laterEditor.selected == text else { throw SubtitleError.invalid("Text track name click did not select its text") }
+    let layerClip=laterEditor.project.layers[0].clip.id
+    timelineView.selectRow(at:timelineView.videoRowY(layerClip)+10)
+    guard laterEditor.selectedClip == layerClip,timelineView.selectedClip == layerClip else { throw SubtitleError.invalid("Video track name click did not select its clip") }
+    laterEditor.select(text,seek:false); timelineView.selectedClip=layerClip
+    laterEditor.view.layoutSubtreeIfNeeded()
+    if let bitmap=laterEditor.bottom.bitmapImageRepForCachingDisplay(in:laterEditor.bottom.bounds) {
+        laterEditor.bottom.cacheDisplay(in:laterEditor.bottom.bounds,to:bitmap)
+        try? bitmap.representation(using:.png,properties:[:])?.write(to:URL(fileURLWithPath:"/tmp/timeline-selected-rows-\(InterfaceLanguage.current.rawValue).png"))
+    }
+    // "Delete Track" removes a selected video track but keeps the main track.
+    let beforeTrackDelete=laterEditor.project
+    laterEditor.selectVideoClip(laterEditor.project.clips[0].id); laterEditor.deleteSelectedTrack()
+    guard laterEditor.project == beforeTrackDelete else { throw SubtitleError.invalid("Delete Track removed the main video track") }
+    laterEditor.selectVideoClip(layerClip); RunLoop.main.run(until:Date().addingTimeInterval(0.1)); laterEditor.deleteSelectedTrack()
+    guard laterEditor.project.layers.isEmpty,laterEditor.project.clips == beforeTrackDelete.clips else { throw SubtitleError.invalid("Delete Track on a video track failed") }
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1)); laterEditor.history.undo()
+    guard laterEditor.project == beforeTrackDelete else { throw SubtitleError.invalid("Video track delete undo failed") }
     // Region erase on a video-track clip (not only the main track): default smart repair, one undo step.
     let eraseEditor=EditorController(); _=eraseEditor.view
     guard eraseEditor.addSplitScreen([urls[0],urls[1]],layout:.row,canvas:.landscape) else { throw SubtitleError.invalid("Erase split failed") }
@@ -695,7 +723,7 @@ func runMultilingualChecks() throws {
     }
     editor.showSettings()
     editor.refresh()
-    guard editor.displayMode.label(forSegment:0) == Language.en.title, editor.displayMode.label(forSegment:1) == Language.fr.title else { throw SubtitleError.invalid("Display language controls failed") }
+    guard editor.project.subtitleLanguages == [.en,.fr] else { throw SubtitleError.invalid("Display languages failed: \(editor.project.subtitleLanguages)") }
     // Deleting subtitle files from the Subtitles list (with confirmation), text tracks too, and undo.
     let listEditor=EditorController(); _=listEditor.view
     let listWindow=NSWindow(contentRect:NSRect(x:0,y:0,width:1140,height:760),styleMask:[.titled],backing:.buffered,defer:false)
@@ -732,6 +760,42 @@ func runMultilingualChecks() throws {
     RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.history.undo()
     RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.history.undo()
     guard listEditor.project == listed else { throw SubtitleError.invalid("Subtitle file delete undo failed") }
+    // "Delete Track" removes the row of the selected cue: a subtitle language after confirmation, or a text track.
+    listEditor.select(listEditor.project.cues.first { $0.trackID == nil && $0.language == .fr }!.id)
+    DispatchQueue.main.asyncAfter(deadline:.now()+0.2) { NSApp.stopModal(withCode:.alertFirstButtonReturn) }
+    listEditor.deleteSelectedTrack()
+    guard !listEditor.project.cues.contains(where:{ $0.trackID == nil && $0.language == .fr }),listEditor.project.tracks.count == 1 else { throw SubtitleError.invalid("Delete Track on a French cue failed") }
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.history.undo()
+    listEditor.select(listEditor.project.cues.first { $0.trackID != nil }!.id); listEditor.deleteSelectedTrack()
+    guard listEditor.project.tracks.isEmpty,listEditor.project.cues.count == listed.cues.count-1 else { throw SubtitleError.invalid("Delete Track on a text cue failed") }
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.history.undo()
+    listEditor.clearSelection(); listEditor.deleteSelectedTrack()
+    guard listEditor.project == listed else { throw SubtitleError.invalid("Delete Track without selection changed the project") }
+    // Lock and eye on subtitle rows: header buttons, locked edits rejected, hidden text track left out of the preview.
+    listEditor.timeline.needsLayout=true; listEditor.timeline.layoutSubtreeIfNeeded()
+    let headerButtons=listEditor.timeline.subviews.compactMap { $0 as? NSButton }.filter { ["fr","zh",listed.tracks[0].id.uuidString].contains($0.identifier?.rawValue ?? "") }
+    guard headerButtons.count == 6 else { throw SubtitleError.invalid("Subtitle row lock/eye buttons missing: \(headerButtons.count) rows \(listEditor.timeline.subtitleRowCount) \(listEditor.project.subtitleLanguages)") }
+    let french=listEditor.project.cues.first { $0.trackID == nil && $0.language == .fr }!
+    listEditor.toggleSubtitleTrackControl(language:.fr,trackID:nil,control:0)
+    listEditor.select(french.id)
+    guard listEditor.project.isLocked(.fr),!listEditor.startField.isEnabled,!listEditor.textEditor.isEditable else { throw SubtitleError.invalid("Locked French row is still editable in the inspector") }
+    DispatchQueue.main.asyncAfter(deadline:.now()+0.2) { NSApp.stopModal(withCode:.alertFirstButtonReturn) }
+    listEditor.updateCue(french.id) { cue,_ in cue.start+=100 }
+    DispatchQueue.main.asyncAfter(deadline:.now()+0.2) { NSApp.stopModal(withCode:.alertFirstButtonReturn) }
+    listEditor.deleteSelectedTrack()
+    guard listEditor.project.cues.contains(french) else { throw SubtitleError.invalid("Locked French row was changed") }
+    let textCue=listEditor.project.cues.first { $0.trackID != nil }!
+    listEditor.toggleSubtitleTrackControl(language:nil,trackID:textCue.trackID,control:1)
+    guard !listEditor.project.visible(textCue),listEditor.project.active(at:textCue.start).allSatisfy({ $0.trackID == nil }) else { throw SubtitleError.invalid("Hidden text track still shows") }
+    listEditor.toggleSubtitleTrackControl(language:.zh,trackID:nil,control:1)
+    guard !listEditor.project.visible(.zh),listEditor.project.active(at:0).allSatisfy({ $0.language != .zh || $0.trackID != nil }) else { throw SubtitleError.invalid("Chinese eye did not hide Chinese subtitles") }
+    listEditor.view.layoutSubtreeIfNeeded(); listEditor.timeline.layoutSubtreeIfNeeded()
+    if let bitmap=listEditor.bottom.bitmapImageRepForCachingDisplay(in:listEditor.bottom.bounds) {
+        listEditor.bottom.cacheDisplay(in:listEditor.bottom.bounds,to:bitmap)
+        try? bitmap.representation(using:.png,properties:[:])?.write(to:URL(fileURLWithPath:"/tmp/subtitle-row-lock-eye-\(InterfaceLanguage.current.rawValue).png"))
+    }
+    for _ in 0..<3 { RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.history.undo() }
+    guard listEditor.project == listed else { throw SubtitleError.invalid("Lock/eye undo failed") }
     // "Add Text" where the chosen track already shows text creates new tracks, so several texts show together.
     listEditor.current=3500; listEditor.refresh(); listEditor.textTrackChoice.selectItem(at:0)
     RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.addTrackText()
