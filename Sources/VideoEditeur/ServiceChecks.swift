@@ -796,6 +796,19 @@ func runMultilingualChecks() throws {
     }
     for _ in 0..<3 { RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.history.undo() }
     guard listEditor.project == listed else { throw SubtitleError.invalid("Lock/eye undo failed") }
+    // Double-clicking an empty spot of a subtitle row adds a cue there, filling the gap up to two seconds.
+    let frenchCue=listed.cues.first { $0.trackID == nil && $0.language == .fr }!,trackCue=listed.cues.first { $0.trackID != nil }!
+    guard listEditor.timeline.subtitleRow(at:listEditor.timeline.rect(frenchCue).midY)?.language == .fr,
+          listEditor.timeline.subtitleRow(at:listEditor.timeline.rect(trackCue).midY)?.trackID == trackCue.trackID,
+          listEditor.timeline.subtitleRow(at:listEditor.timeline.rect(frenchCue).maxY+5) == nil else { throw SubtitleError.invalid("Timeline subtitle row lookup failed") }
+    listEditor.addCue(language:.fr,trackID:nil,at:5000)
+    guard let added=listEditor.project.cues.first(where:{ $0.language == .fr && $0.trackID == nil && $0.start == 5000 }),added.end == 7000,
+          listEditor.selected == added.id,listEditor.project.cues.count == listed.cues.count+1 else { throw SubtitleError.invalid("Double-click add subtitle failed") }
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.history.undo()
+    listEditor.toggleSubtitleTrackControl(language:.fr,trackID:nil,control:0); listEditor.addCue(language:.fr,trackID:nil,at:5000)
+    guard listEditor.project.cues == listed.cues else { throw SubtitleError.invalid("Locked row accepted a double-click subtitle") }
+    RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.history.undo()
+    guard listEditor.project == listed else { throw SubtitleError.invalid("Double-click add undo failed") }
     // "Add Text" where the chosen track already shows text creates new tracks, so several texts show together.
     listEditor.current=3500; listEditor.refresh(); listEditor.textTrackChoice.selectItem(at:0)
     RunLoop.main.run(until:Date().addingTimeInterval(0.1)); listEditor.addTrackText()

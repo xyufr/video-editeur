@@ -55,6 +55,7 @@ public enum UILocalization {
         "锁定字幕轨道":"Lock subtitle track", "解锁字幕轨道":"Unlock subtitle track",
         "隐藏字幕轨道":"Hide subtitle track", "显示字幕轨道":"Show subtitle track",
         "字幕轨道已锁定，请先解锁":"Subtitle track is locked. Unlock it before editing.",
+        "该轨道已隐藏，请先显示":"This track is hidden. Show it first.",
         "恢复视频原声":"Unmute video audio", "视频轨道已锁定，请先解锁":"Video track is locked. Unlock it before editing.",
         "添加素材": "Add Media",
         "添加素材…": "Add Media…",

@@ -646,3 +646,9 @@ Release 构建通过，65/65 核心检查通过；包含译文占位符一致性
 - 修改：删除中间面板顶部 “预览” 标题及其占用的空白，预览画面上移至距面板顶部 10 pt；移除未使用的 “预览” 文案。`--smoke-multitrack` 新增整窗快照 `/tmp/editor-window-{zh,en}.png`。
 - `build-app.sh` 构建通过；`check.sh` 107 通过；`check-multitrack.sh` 中英文、`--check-startup` 通过；已目测中文整窗快照。
 - 未执行：真实窗口目测。
+
+## 2026-10-31 · 在时间轴字幕行双击添加字幕
+
+- 修改：`TimelineView.subtitleRow(at:)` 按 y 找到字幕语言行或文字轨道；在其空白处双击调用 `EditorController.addCue`，用 `Project.newCue` 在点击时间添加字幕（最长 2 秒、不越过下一条），作为一步撤销并选中。锁定或隐藏的行在状态栏提示且不修改工程。新增 “该轨道已隐藏，请先显示” 中英文案。
+- `build-app.sh` 构建通过；`check.sh` 107 通过；`--check-multilingual` 中英文通过（新增：行查找含行间空隙返回 nil；法语行 5 s 处添加得到 5–7 s 并选中；撤销恢复；锁定法语行拒绝添加）；`check-multitrack.sh` 中英文通过。
+- 未执行：真实窗口中鼠标双击目测（检查直接调用行查找和添加逻辑，未合成双击事件）。

@@ -446,6 +446,8 @@ final class TimelineView: NSView {
     private var drag: (Cue,CGFloat,Int)?
     var toggleVideoTrackControl: ((Int)->Void)?
     var toggleLayerTrackControl: ((UUID,Int)->Void)?
+    /// Double-click on an empty spot of a subtitle language row or text track: (language, track, time).
+    var addCue: ((Language,UUID?,Int64)->Void)?
     /// Language row (language set) or text track (id set), then 0 for the lock or 1 for the eye.
     var toggleSubtitleTrackControl: ((Language?,UUID?,Int)->Void)?
     private var layerButtons: [UUID:[NSButton]]=[:]
@@ -552,6 +554,14 @@ final class TimelineView: NSView {
     /// Track header: each row has a card holding a coloured dot, the name and, below it, the track buttons,
     /// centred vertically in the row.
     func subtitleRowY(_ row: Int) -> CGFloat { 43+CGFloat(row)*44 }
+    /// The subtitle language or text track whose 40 pt row contains `y`.
+    func subtitleRow(at y: CGFloat) -> (language: Language,trackID: UUID?)? {
+        let row=Int(floor((y-43)/44))
+        guard y>=43,y-subtitleRowY(row)<40 else { return nil }
+        if row<subtitleRowCount { return project.subtitleLanguages.indices.contains(row) ? (project.subtitleLanguages[row],nil) : nil }
+        let track=row-subtitleRowCount
+        return project.tracks.indices.contains(track) ? (.zh,project.tracks[track].id) : nil
+    }
     private func headerCard(row: CGFloat, height: CGFloat) -> CGRect { CGRect(x:4,y:row,width:leading-10,height:height) }
     private func headerContentTop(row: CGFloat, height: CGFloat, buttons: Bool) -> CGFloat { row+(height-(buttons ? 36 : 15))/2 }
     private func headerButtonFrame(_ index: Int, row: CGFloat, height: CGFloat) -> CGRect {
@@ -804,6 +814,8 @@ final class TimelineView: NSView {
             select?(cue.id); let r=rect(cue)
             let edge=min(7,r.width/3)
             if !project.isLocked(cue) { drag=(cue,p.x,p.x-r.minX < edge ? -1 : (r.maxX-p.x < edge ? 1 : 0)) }
+        } else if event.clickCount == 2,p.x>=leading,let row=subtitleRow(at:p.y) {
+            addCue?(row.language,row.trackID,ms(p.x))
         } else { seek?(ms(p.x)); if p.y>32 { onDeselect?() } }
     }
     override func mouseDragged(with event: NSEvent) {

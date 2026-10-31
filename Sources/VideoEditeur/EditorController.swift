@@ -197,6 +197,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         }
         timeline.moveVideoLayer={[weak self] layer in self?.updateVideoLayer(layer) }
         timeline.toggleLayerTrackControl={[weak self] id,control in self?.toggleLayerTrackControl(id,control) }
+        timeline.addCue={[weak self] language,id,time in self?.addCue(language:language,trackID:id,at:time) }
         timeline.toggleSubtitleTrackControl={[weak self] language,id,control in self?.toggleSubtitleTrackControl(language:language,trackID:id,control:control) }
         timeline.selectVideo={[weak self] id in self?.selectVideoClip(id) }
         timeline.editVideoTrack={[weak self] id,action in self?.editVideoTrack(id,action) }
@@ -794,6 +795,22 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         guard project.subtitleLanguages.contains(where: { project.visible($0) }) else { showError(SubtitleError.invalid(L("请先选择要显示的字幕语言"))); return }
         let language: Language = project.subtitleLanguages.contains(preferredLanguage) && project.visible(preferredLanguage) ? preferredLanguage : project.subtitleLanguages.first(where: { project.visible($0) })!
         do { let cue=try project.newCue(language:language,at:current); var next=project; next.cues.append(cue); commit(next,name:L("添加字幕")); select(cue.id) } catch { showError(error) }
+    }
+    /// Adds a subtitle (or text, on a text track) at `time` in that timeline row, filling up to two
+    /// seconds of the gap, and selects it for typing.
+    func addCue(language: Language, trackID: UUID?, at time: Int64) {
+        guard !busy else { return }
+        pauseForEditing()
+        let track=trackID.flatMap { id in project.tracks.first { $0.id == id } }
+        if track?.isLocked ?? project.isLocked(language) { statusLabel.stringValue=L("字幕轨道已锁定，请先解锁"); return }
+        if track?.isHidden ?? !project.visible(language) { statusLabel.stringValue=L("该轨道已隐藏，请先显示"); return }
+        do {
+            let cue=try project.newCue(language:language,at:time,trackID:trackID)
+            var next=project; next.cues.append(cue); commit(next,name:trackID == nil ? L("添加字幕") : L("添加文字"))
+            guard project.cues.contains(cue) else { return }
+            if trackID == nil { preferredLanguage=language }
+            select(cue.id,seek:false)
+        } catch { showError(error) }
     }
     func deleteSubtitle() { guard !busy,let id=selected else { return }; var next=project; next.cues.removeAll{$0.id == id}; selected=nil; commit(next,name:L("删除字幕")); refreshInspector() }
     @objc func zoomChanged() { timeline.pointsPerSecond=zoom.doubleValue; resizeTimeline() }
