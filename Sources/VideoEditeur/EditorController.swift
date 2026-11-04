@@ -155,9 +155,13 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         let delete=ActionButton("",symbol:"trash",action:{[weak self] in self?.deleteSubtitle()}); delete.identifier=NSUserInterfaceItemIdentifier("delete"); left.addSubview(delete)
         center.drop={[weak self] in self?.loadVideo($0)}
         preview.player=player; preview.allowsVideoFrameAnalysis=false; preview.controlsStyle = .none; preview.videoGravity = .resizeAspect; center.addSubview(preview); center.addSubview(overlay)
-        let eraseButton=ActionButton(L("区域去字"),symbol:"eraser",action:{[weak self] in self?.beginRegionErase()}); eraseButton.setButtonType(.pushOnPushOff); eraseButton.identifier=NSUserInterfaceItemIdentifier("regionErase"); eraseButton.toolTip=L("框选原视频文字，按 Delete 用背景色覆盖"); center.addSubview(eraseButton)
+        let eraseButton=ActionButton(L("区域去字"),symbol:"eraser",action:{[weak self] in self?.beginRegionErase()}); eraseButton.setButtonType(.pushOnPushOff); eraseButton.identifier=NSUserInterfaceItemIdentifier("regionErase"); eraseButton.toolTip=L("框选原视频文字，松开鼠标后设置去字方式"); center.addSubview(eraseButton)
         overlay.onEraseStarted={[weak self] point in self?.sampleEraseColor(at:point) }
-        overlay.onEraseSelected={[weak self] in self?.statusLabel.stringValue=L("已框选区域 · 按 Delete 设置背景覆盖，Esc 取消") }
+        // Open the erase dialog as soon as the box is drawn; wait for mouseUp to finish before running the modal.
+        overlay.onEraseSelected={[weak self] in
+            self?.statusLabel.stringValue=L("已框选区域 · 取消后可重新框选或按 Delete 再次打开，Esc 退出")
+            DispatchQueue.main.async { guard let self,self.overlay.eraseMode,self.overlay.eraseRect != nil else { return }; self.applySelectedEraseRegion() }
+        }
         overlay.onEraseCancelled={[weak self] in self?.cancelRegionErase(); self?.statusLabel.stringValue=L("已取消区域框选") }
         center.addSubview(emptyTitle); center.addSubview(emptyHint)
         playButton=ActionButton("",symbol:"play.fill",action:{[weak self] in self?.togglePlay()}); center.addSubview(playButton)

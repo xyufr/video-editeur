@@ -21,7 +21,6 @@ extension EditorController {
                 DispatchQueue.main.async {
                     guard let self,self.eraseSampleID == token,self.overlay.eraseMode else { return }
                     self.eraseSampleColor=color
-                    self.statusLabel.stringValue=L("框选后按 Delete 智能去字")
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -48,7 +47,7 @@ extension EditorController {
         eraseClipID=clip.id; overlay.eraseMode=true; overlay.eraseRect=nil
         refreshRegionEraseButton()
         overlay.needsDisplay=true; overlay.window?.invalidateCursorRects(for:overlay); view.window?.makeFirstResponder(overlay)
-        statusLabel.stringValue=L("框选要去除的文字；Delete 智能去字，Esc 取消")
+        statusLabel.stringValue=L("框选要去除的文字，松开鼠标后设置去字方式；Esc 取消")
     }
     func cancelRegionErase() {
         eraseSampleID=nil; eraseSampleColor=nil
