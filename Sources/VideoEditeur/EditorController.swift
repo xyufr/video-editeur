@@ -27,6 +27,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     var subtitleFileRetryDirectory: URL?
     var subtitleFileRetryProject: Project?
     var exporter: VideoExporter?
+    var audioLyrics: AudioLyrics?
     var busy=false
     var autosave: DispatchWorkItem?
     let root=LayoutView(), header=NSView(), left=NSView(), center=DropView(), right=NSView(), bottom=NSView()
@@ -113,7 +114,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         header.layer?.backgroundColor=NSColor.clear.cgColor
         importButton=ActionButton(L("导入视频"),symbol:"plus",action:{[weak self] in self?.importVideo()})
         generateButton=ActionButton(L("生成字幕"),symbol:"sparkles",action:{[weak self] in self?.generate()})
-        exportButton=ActionButton(L("导出视频"),symbol:"square.and.arrow.up",action:{[weak self] in self?.exportVideo()}); exportButton.contentTintColor=accent
+        exportButton=ActionButton(L("导出"),symbol:"square.and.arrow.up",action:{[weak self] in self?.exportVideo()}); exportButton.contentTintColor=accent
         let new=ActionButton(L("新建"),symbol:"doc.badge.plus",action:{[weak self] in self?.newProject()}); new.identifier=NSUserInterfaceItemIdentifier("newProject")
         let save=ActionButton(L("保存"),symbol:"square.and.arrow.down",action:{[weak self] in self?.saveProject()}); save.identifier=NSUserInterfaceItemIdentifier("save")
         let settings=ActionButton("",symbol:"gearshape",action:{[weak self] in self?.showSettings()}); settings.identifier=NSUserInterfaceItemIdentifier("settings")
@@ -566,7 +567,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
             player.playImmediately(atRate:playbackSpeed)
         }
         refreshMusicControls()
-        fileLabel.stringValue=project.videoPath.isEmpty ? L("尚未导入视频") : URL(fileURLWithPath:project.videoPath).lastPathComponent
+        fileLabel.stringValue=project.videoPath.isEmpty ? (lyricsAudio.map { URL(fileURLWithPath:$0.path).lastPathComponent } ?? L("尚未导入视频")) : URL(fileURLWithPath:project.videoPath).lastPathComponent
         syncingSelection=true; table.reloadData(); syncingSelection=false
         if let selected,project.cues.contains(where:{$0.id == selected}) { syncLibrarySelection() }
         else { selected=nil; setTableSelection([]); refreshInspector() }
@@ -589,7 +590,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         languageChoice.isEnabled = !busy
         (left.subviews.first{$0.identifier?.rawValue == "delete"})?.isHidden=showsGrid
         (header.subviews.first{$0.identifier?.rawValue == "newProject"} as? NSButton)?.isEnabled = !busy
-        generateButton.isEnabled = !busy && !project.videoPath.isEmpty; exportButton.isEnabled=generateButton.isEnabled; importButton.isEnabled = !busy
+        generateButton.isEnabled = !busy && (!project.videoPath.isEmpty || lyricsAudio != nil); exportButton.isEnabled = !busy && (!project.videoPath.isEmpty || hasLyricsForAudio); importButton.isEnabled = !busy
         scrub.isEnabled = !project.videoPath.isEmpty; scrub.maxValue=max(1,Double(project.duration))
         playbackSpeedChoice.isEnabled = !busy && player.currentItem != nil
         (left.subviews.first{$0.identifier?.rawValue == "add"} as? NSButton)?.title = showsMedia ? L("添加素材") : L("添加")
@@ -932,7 +933,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         cancelRegionErase()
         timeline.subtitleTracksRequested=false
         project=blank; projectURL=nil; selectedMusic=nil; timeline.selectedMusic=nil; selected=nil; selectedClip=nil; current=0
-        deselectedCueIDs=nil; styleDragOriginal=nil; retryDirectory=nil
+        deselectedCueIDs=nil; styleDragOriginal=nil; retryDirectory=nil; audioLyrics=nil
         UserDefaults.standard.removeObject(forKey:"projectURL")
         UserDefaults.standard.removeObject(forKey:"pendingJob")
         history.removeAllActions()
@@ -998,7 +999,9 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         return GenerationOptions(languages:GenerationLanguages(source:sources[source.indexOfSelectedItem],target:targets[target.indexOfSelectedItem]),filesOnly:filesOnly.state == .on)
     }
     func generate() {
-        guard !busy,!project.videoPath.isEmpty else { return }
+        guard !busy else { return }
+        if project.videoPath.isEmpty,let music=lyricsAudio { generateLyrics(music); return }
+        guard !project.videoPath.isEmpty else { return }
         guard let options=chooseGenerationLanguages() else { return }
         let languages=options.languages
         if options.filesOnly { generateSubtitleFiles(languages:languages); return }
@@ -1042,7 +1045,9 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         }
     }
     func exportVideo() {
-        guard !busy,!project.videoPath.isEmpty else { return }
+        guard !busy else { return }
+        if project.videoPath.isEmpty,let music=lyricsAudio { exportLyrics(music); return }
+        guard !project.videoPath.isEmpty else { return }
         guard let color=chooseExportColor() else { return }
         let panel=NSSavePanel(); panel.allowedContentTypes=[.mpeg4Movie]; panel.nameFieldStringValue=URL(fileURLWithPath:project.videoPath).deletingPathExtension().lastPathComponent+"-subtitles.mp4"
         panel.directoryURL=videoOutputDirectory

@@ -25,6 +25,15 @@ check("Reject malformed time") { rejects { _ = try SRT.time("00:61:00,000") } }
 check("Reject overlapping SRT") { rejects { _ = try SRT.parse(fr.replacingOccurrences(of:"00:00:01,500 -->",with:"00:00:01,000 -->"),language:.fr) } }
 check("Reject reversed interval") { rejects { _ = try SRT.parse("1\n00:00:02,000 --> 00:00:01,000\nX",language:.fr) } }
 check("SRT hour formatting") { SRT.timestamp(3_661_007) == "01:01:01,007" }
+check("LRC keeps minutes past an hour and truncates to centiseconds") { LRC.timestamp(3_661_007) == "[61:01.00]" && LRC.timestamp(1_239) == "[00:01.23]" }
+check("LRC blank line only at gaps") {
+    let text=LRC.encode([Cue(language:.fr,start:0,end:1500,text:"Bonjour\nmonde"),Cue(language:.fr,start:1500,end:2000,text:"Une"),Cue(language:.fr,start:3000,end:4000,text:"Deux")],title:"Song",length:65_000)
+    return text == "[ti:Song]\n[length:01:05]\n[00:00.00]Bonjour monde\n[00:01.50]Une\n[00:02.00]\n[00:03.00]Deux\n[00:04.00]\n"
+}
+check("LRC follows trimmed audio range") {
+    let c=LRC.clipped([Cue(language:.en,start:500,end:1500,text:"a"),Cue(language:.en,start:2000,end:3000,text:"b"),Cue(language:.en,start:5000,end:6000,text:"c")],start:1000,end:5000)
+    return c.map(\.start) == [0,1000] && c.map(\.end) == [500,2000]
+}
 var p=Project(); p.duration=5000; p.cues=cues
 check("Active end is exclusive") { p.active(at:1500).count == 1 && p.active(at:1500)[0].text == "Une histoire" }
 check("Add clipped at video end") { let c=try p.newCue(language:.zh,at:4500); return c.end == 5000 }
