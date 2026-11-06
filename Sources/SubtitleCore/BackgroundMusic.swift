@@ -24,6 +24,23 @@ extension Project {
 }
 
 extension Project {
+    /// No video, only audio: subtitles (lyrics) are timed against the audio on the timeline.
+    public var isAudioOnly: Bool { videoPath.isEmpty && allClips.isEmpty && !music.isEmpty }
+    /// Without video, `duration` is the end of the last audio clip; cues past it are trimmed or dropped.
+    /// Projects with video keep the video-defined duration unchanged.
+    public func syncingAudioOnlyDuration() -> Project {
+        guard videoPath.isEmpty,allClips.isEmpty else { return self }
+        var next=self; next.duration=music.map { $0.start+$0.duration }.max() ?? 0
+        guard next.duration < duration else { return next }
+        next.cues=cues.compactMap { cue in
+            guard cue.start<next.duration else { return nil }
+            var value=cue; value.end=min(value.end,next.duration); return value
+        }
+        return next
+    }
+}
+
+extension Project {
     /// Music cuts preserve absolute timeline positions and never ripple video/subtitles.
     public func cuttingMusic(_ id: UUID,at time: Int64,removeBefore: Bool? = nil) throws -> Project {
         guard let index=music.firstIndex(where:{$0.id == id}) else { throw SubtitleError.invalid(L("请先选择音乐片段")) }

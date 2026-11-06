@@ -76,6 +76,9 @@ if CommandLine.arguments.contains("--check-local-library") {
 } else if CommandLine.arguments.contains("--check-multilingual") {
     _=NSApplication.shared
     do { try runMultilingualChecks(); exit(0) } catch { fputs("\(error)\n",stderr); exit(1) }
+} else if CommandLine.arguments.count >= 3,CommandLine.arguments[1] == "--check-audio-lyrics" {
+    _=NSApplication.shared
+    do { try runAudioLyricsChecks(audio:URL(fileURLWithPath:CommandLine.arguments[2])); exit(0) } catch { fputs("\(error)\n",stderr); exit(1) }
 } else if CommandLine.arguments.contains("--check-codex-path") {
     do { try runCodexPathChecks(); exit(0) } catch { fputs("\(error)\n",stderr); exit(1) }
 } else if CommandLine.arguments.contains("--check-close") {

@@ -36,10 +36,13 @@ extension EditorController {
             if let time=newTrackAt,!videos.isEmpty,!project.clips.isEmpty { next=try project.addingLayerTrack(videos,at:time) }
             else { next=try videos.isEmpty ? project : project.replacingClips(project.clips+videos) }
             if next.videoClips == nil && next.videoPath.isEmpty { next.videoClips=[] }
+            // The first audio of a project without video is the material itself, not background music.
+            let audioOnly=next.allClips.isEmpty && next.videoPath.isEmpty && project.music.isEmpty
             for i in sounds.indices {
                 sounds[i].start=next.duration>0 ? min(current,next.duration-1) : 0
+                if audioOnly { sounds[i].volume=1 }
             }
-            next.backgroundMusic=project.music+sounds
+            next.backgroundMusic=project.music+sounds; next=next.syncingAudioOnlyDuration()
             mediaSearch.stringValue=""
             commit(next,name:newTrackAt != nil && !videos.isEmpty ? L("新建视频轨道") : L("添加素材"))
             if project == next { if let id=sounds.last?.id { selectMusicClip(id) } else if let id=videos.first?.id { selectVideoClip(id) } }
@@ -54,7 +57,13 @@ extension EditorController {
         if let info=try? MediaProbe(placement.clip.path) { statusLabel.stringValue=info.description+L(" · 双击视频片段编辑") }
     }
     func installPreview(for next: Project) throws {
-        guard !next.allClips.isEmpty else { player.pause(); player.replaceCurrentItem(with:nil); current=0; loadTimelineThumbnails(for:[]); return }
+        guard !next.allClips.isEmpty else {
+            player.pause(); playButton.image=NSImage(systemSymbolName:"play.fill",accessibilityDescription:L("播放"))
+            player.replaceCurrentItem(with:next.isAudioOnly ? try audioOnlyPlayerItem(next) : nil)
+            current=next.isAudioOnly ? min(current,max(0,next.duration-1)) : 0
+            if next.isAudioOnly { player.seek(to:CMTime(value:current,timescale:1000)) }
+            loadTimelineThumbnails(for:[]); return
+        }
         let formats=try MediaProbe.formats(next).0
         let edited=try EditedAsset(project:next,color:formats.last ?? .sdr,subtitles:false)
         player.pause(); playButton.image=NSImage(systemSymbolName:"play.fill",accessibilityDescription:L("播放"))
@@ -85,7 +94,7 @@ extension EditorController {
                 guard !asset.tracks(withMediaType:.audio).isEmpty,seconds.isFinite,seconds>=Double(music.sourceEnd)/1000 else { throw SubtitleError.invalid(L("背景音乐没有可用音频")) }
                 for i in next.backgroundMusic!.indices where next.backgroundMusic![i].path == music.path { next.backgroundMusic![i].path=url.path }
             }
-            next.videoPath=next.allClips.first?.path ?? ""; try installPreview(for:next); project=next; refresh(); scheduleSave()
+            next.videoPath=next.allClips.first?.path ?? ""; next=next.syncingAudioOnlyDuration(); try installPreview(for:next); project=next; refresh(); scheduleSave()
         } catch { showError(error) }
     }
     var targetClip: VideoClip? { project.allClips.first{$0.id == selectedClip} ?? project.placements.first{$0.start<=current && current<$0.end}?.clip ?? project.clips.first }
@@ -185,6 +194,7 @@ extension EditorController {
 
 extension EditorController {
     func prepareTranscriptionInput(project: Project,job: GenerationJob) throws -> URL {
+        if project.isAudioOnly { return try audioTranscriptionInput(project:project,job:job) }
         guard project.videoClips != nil else { return URL(fileURLWithPath:project.videoPath) }
         try FileManager.default.createDirectory(at:job.directory,withIntermediateDirectories:true)
         let destination=job.directory.appendingPathComponent("edited-audio.m4a")

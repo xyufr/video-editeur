@@ -30,6 +30,18 @@ check("LRC blank line only at gaps") {
     let text=LRC.encode([Cue(language:.fr,start:0,end:1500,text:"Bonjour\nmonde"),Cue(language:.fr,start:1500,end:2000,text:"Une"),Cue(language:.fr,start:3000,end:4000,text:"Deux")],title:"Song",length:65_000)
     return text == "[ti:Song]\n[length:01:05]\n[00:00.00]Bonjour monde\n[00:01.50]Une\n[00:02.00]\n[00:03.00]Deux\n[00:04.00]\n"
 }
+check("Audio-only timeline length follows audio and keeps lyrics valid") {
+    var q=Project(); q.videoClips=[]; q.backgroundMusic=[BackgroundMusic(path:"song.mp3",duration:10_000)]
+    q=q.syncingAudioOnlyDuration(); q.cues=[Cue(language:.fr,start:1000,end:9500,text:"la")]
+    guard q.isAudioOnly, q.duration == 10_000 else { return false }
+    try q.validate()
+    var cut=try q.cuttingMusic(q.music[0].id,at:5000,removeBefore:false).syncingAudioOnlyDuration()
+    guard cut.duration == 5000, cut.cues.first?.end == 5000 else { return false }
+    try cut.validate()
+    cut.backgroundMusic=[]; cut=cut.syncingAudioOnlyDuration()
+    var video=Project(); video.duration=4000; video.videoPath="v.mp4"
+    return cut.duration == 0 && cut.cues.isEmpty && video.syncingAudioOnlyDuration() == video
+}
 check("LRC follows trimmed audio range") {
     let c=LRC.clipped([Cue(language:.en,start:500,end:1500,text:"a"),Cue(language:.en,start:2000,end:3000,text:"b"),Cue(language:.en,start:5000,end:6000,text:"c")],start:1000,end:5000)
     return c.map(\.start) == [0,1000] && c.map(\.end) == [500,2000]

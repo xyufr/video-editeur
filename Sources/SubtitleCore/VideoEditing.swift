@@ -98,7 +98,8 @@ extension Project {
                 throw SubtitleError.invalid(L("视频裁剪或特效参数无效：叠化不能超过相邻片段一半，淡入淡出不能超过片段时长"))
             }
         }
-        if videoClips != nil {
+        // Without any video the timeline length follows the audio (see `syncingAudioOnlyDuration`).
+        if videoClips != nil,!(videoPath.isEmpty && allClips.isEmpty) {
             guard videoDuration == duration else { throw SubtitleError.invalid(L("剪辑时间轴长度不一致")) }
         }
     }

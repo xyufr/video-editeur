@@ -27,7 +27,6 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     var subtitleFileRetryDirectory: URL?
     var subtitleFileRetryProject: Project?
     var exporter: VideoExporter?
-    var audioLyrics: AudioLyrics?
     var busy=false
     var autosave: DispatchWorkItem?
     let root=LayoutView(), header=NSView(), left=NSView(), center=DropView(), right=NSView(), bottom=NSView()
@@ -89,7 +88,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         if showsMedia {
             return project.renderPlacements.enumerated().map { i,p in LibraryEntry(title:"\(i+1). \(URL(fileURLWithPath:p.clip.path).lastPathComponent)",detail:L("{0} · {1} 秒", [String(describing: SRT.timestamp(p.start).prefix(8)), String(describing: String(format:"%.2f",Double(p.clip.duration)/1000))]),language:nil,trackID:nil,clipID:p.clip.id) } + project.music.map { music in LibraryEntry(title:URL(fileURLWithPath:music.path).lastPathComponent,detail:L("音乐")+" · "+String(format:"%.2f s",Double(music.duration)/1000),language:nil,trackID:nil,musicID:music.id) }
         }
-        var entries: [LibraryEntry] = project.videoPath.isEmpty ? [] : project.subtitleLanguages.map { language in
+        var entries: [LibraryEntry] = !hasTimelineMedia ? [] : project.subtitleLanguages.map { language in
             LibraryEntry(title:language.title+" · "+L("字幕"),detail:L("{0} 条字幕", [String(describing: project.cues.filter{$0.trackID == nil && $0.language == language}.count)]),language:language,trackID:nil)
         }
         entries += project.tracks.map { track in
@@ -308,7 +307,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
                   window.isKeyWindow,window.attachedSheet == nil,NSApp.modalWindow == nil,
                   event.keyCode == 49,
                   event.modifierFlags.intersection([.command,.control,.option,.shift]).isEmpty,
-                  !(window.firstResponder is NSText),!self.project.videoPath.isEmpty else { return event }
+                  !(window.firstResponder is NSText),self.hasTimelineMedia else { return event }
             // Consume repeats too: holding Space should toggle playback only once.
             if !event.isARepeat { self.togglePlay() }
             return nil
@@ -408,7 +407,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         statusLabel.frame=NSRect(x:17,y:6,width:w-330,height:17); progress.frame=NSRect(x:w-310,y:12,width:190,height:6); cancelButton.frame=NSRect(x:w-106,y:1,width:90,height:26)
     }
     func resizeTimeline() {
-        timelineScroll.showsScrollers = !project.clips.isEmpty || !project.layers.isEmpty
+        timelineScroll.showsScrollers = !project.clips.isEmpty || !project.layers.isEmpty || !project.music.isEmpty
         timeline.frame=NSRect(x:0,y:0,width:max(timelineScroll.contentSize.width,CGFloat(project.timelineExtent)/1000*timeline.pointsPerSecond+120),height:max(timelineScroll.contentSize.height,timeline.contentHeight)); timeline.needsDisplay=true
     }
     func setupInspector() {
@@ -567,7 +566,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
             player.playImmediately(atRate:playbackSpeed)
         }
         refreshMusicControls()
-        fileLabel.stringValue=project.videoPath.isEmpty ? (lyricsAudio.map { URL(fileURLWithPath:$0.path).lastPathComponent } ?? L("尚未导入视频")) : URL(fileURLWithPath:project.videoPath).lastPathComponent
+        fileLabel.stringValue=project.videoPath.isEmpty ? (project.music.first.map { URL(fileURLWithPath:$0.path).lastPathComponent } ?? L("尚未导入视频")) : URL(fileURLWithPath:project.videoPath).lastPathComponent
         syncingSelection=true; table.reloadData(); syncingSelection=false
         if let selected,project.cues.contains(where:{$0.id == selected}) { syncLibrarySelection() }
         else { selected=nil; setTableSelection([]); refreshInspector() }
@@ -586,15 +585,15 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         (bottom.subviews.first{$0.identifier?.rawValue == "deleteTrack"} as? NSButton)?.isEnabled = !busy && (!project.cues.isEmpty || !project.allClips.isEmpty || !project.music.isEmpty)
         for v in bottom.subviews where v.identifier?.rawValue == "newText" { (v as? NSButton)?.isEnabled = !busy && project.duration > 0 }
         timeline.project=project; timeline.selectedClip=selectedClip; timeline.selected=selected; timeline.current=current; resizeTimeline()
-        emptyTitle.isHidden = !project.videoPath.isEmpty; emptyHint.isHidden=emptyTitle.isHidden
+        emptyTitle.isHidden = hasTimelineMedia; emptyHint.isHidden=emptyTitle.isHidden
         languageChoice.isEnabled = !busy
         (left.subviews.first{$0.identifier?.rawValue == "delete"})?.isHidden=showsGrid
         (header.subviews.first{$0.identifier?.rawValue == "newProject"} as? NSButton)?.isEnabled = !busy
-        generateButton.isEnabled = !busy && (!project.videoPath.isEmpty || lyricsAudio != nil); exportButton.isEnabled = !busy && (!project.videoPath.isEmpty || hasLyricsForAudio); importButton.isEnabled = !busy
-        scrub.isEnabled = !project.videoPath.isEmpty; scrub.maxValue=max(1,Double(project.duration))
+        generateButton.isEnabled = !busy && hasTimelineMedia; exportButton.isEnabled = !busy && (!project.videoPath.isEmpty || (project.isAudioOnly && !lyricsLanguages.isEmpty)); importButton.isEnabled = !busy
+        scrub.isEnabled = hasTimelineMedia; scrub.maxValue=max(1,Double(project.duration))
         playbackSpeedChoice.isEnabled = !busy && player.currentItem != nil
         (left.subviews.first{$0.identifier?.rawValue == "add"} as? NSButton)?.title = showsMedia ? L("添加素材") : L("添加")
-        (left.subviews.first{$0.identifier?.rawValue == "add"} as? NSButton)?.isEnabled = !busy && (showsMedia || !project.videoPath.isEmpty)
+        (left.subviews.first{$0.identifier?.rawValue == "add"} as? NSButton)?.isEnabled = !busy && (showsMedia || hasTimelineMedia)
         (left.subviews.first{$0.identifier?.rawValue == "delete"} as? NSButton)?.isEnabled = !busy && selected != nil
         refreshPlayback()
     }
@@ -626,6 +625,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         textColor.color=s.color.ns; outlineColor.color=s.outline.ns; backgroundColor.color=s.background.a > 0 ? s.background.ns : NSColor(white:0,alpha:0.65); backgroundEnabled.state=s.background.a > 0 ? .on : .off
     }
     func commit(_ next: Project, name: String = L("编辑字幕")) {
+        let next=next.syncingAudioOnlyDuration()
         guard next != project else { return }
         if project.isVideoLocked && next.clips != project.clips && !history.isUndoing && !history.isRedoing {
             showError(SubtitleError.invalid(L("视频轨道已锁定，请先解锁"))); refresh(); return
@@ -822,7 +822,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     @objc func scrubChanged() { seek(Int64(scrub.doubleValue)) }
     func seek(_ ms: Int64) { current=max(0,min(project.duration,ms)); player.seek(to:CMTime(value:current,timescale:1000),toleranceBefore:.zero,toleranceAfter:.zero); followCurrentSubtitles(); refreshPlayback() }
     @objc func togglePlay() {
-        guard !project.videoPath.isEmpty else { return }
+        guard hasTimelineMedia else { return }
         if player.rate == 0 { cancelRegionErase(); if current >= project.duration-40 { seek(0) }; player.currentItem?.audioTimePitchAlgorithm = .spectral; player.playImmediately(atRate:playbackSpeed); playButton.image=NSImage(systemSymbolName:"pause.fill",accessibilityDescription:L("暂停")) }
         else { player.pause(); playButton.image=NSImage(systemSymbolName:"play.fill",accessibilityDescription:L("播放")) }
         refreshPlayback()
@@ -933,7 +933,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         cancelRegionErase()
         timeline.subtitleTracksRequested=false
         project=blank; projectURL=nil; selectedMusic=nil; timeline.selectedMusic=nil; selected=nil; selectedClip=nil; current=0
-        deselectedCueIDs=nil; styleDragOriginal=nil; retryDirectory=nil; audioLyrics=nil
+        deselectedCueIDs=nil; styleDragOriginal=nil; retryDirectory=nil
         UserDefaults.standard.removeObject(forKey:"projectURL")
         UserDefaults.standard.removeObject(forKey:"pendingJob")
         history.removeAllActions()
@@ -1000,9 +1000,8 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     }
     func generate() {
         guard !busy else { return }
-        if project.videoPath.isEmpty,let music=lyricsAudio { generateLyrics(music); return }
-        guard !project.videoPath.isEmpty else { return }
-        guard let options=chooseGenerationLanguages() else { return }
+        guard hasTimelineMedia else { return }
+        guard let options=project.isAudioOnly ? chooseAudioLanguage() : chooseGenerationLanguages() else { return }
         let languages=options.languages
         if options.filesOnly { generateSubtitleFiles(languages:languages); return }
         let cachedLanguages=retryDirectory.flatMap { try? Data(contentsOf:$0.appendingPathComponent("languages.json")) }.flatMap { try? JSONDecoder().decode(GenerationLanguages.self,from:$0) } ?? GenerationLanguages()
@@ -1046,7 +1045,7 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     }
     func exportVideo() {
         guard !busy else { return }
-        if project.videoPath.isEmpty,let music=lyricsAudio { exportLyrics(music); return }
+        if project.isAudioOnly { exportLyrics(); return }
         guard !project.videoPath.isEmpty else { return }
         guard let color=chooseExportColor() else { return }
         let panel=NSSavePanel(); panel.allowedContentTypes=[.mpeg4Movie]; panel.nameFieldStringValue=URL(fileURLWithPath:project.videoPath).deletingPathExtension().lastPathComponent+"-subtitles.mp4"

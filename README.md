@@ -107,9 +107,11 @@ Use the speaker button on the left of each video track to mute its original audi
 
 Subtitle transcription always uses the original video audio, excluding background music and ignoring the mute switch.
 
-### Lyrics from a single audio file (LRC)
+### Lyrics from an audio file (LRC)
 
-When a new project contains only one audio clip and no video (for example, an MP3 added through **Add Media**), **Generate Subtitles** asks for the audio language (**French / English / Chinese**) and transcribes it locally with Whisper; no translation is performed. When it finishes, a save dialog offers an `.lrc` file next to the audio; **Export** saves it again later. Times are relative to the start of the clip's kept range, so trimming the clip edges changes the exported range without re-transcribing. Each cue becomes one `[mm:ss.xx]` line, with an empty timestamp where a pause follows. The transcription is kept only for the current session and is not saved in the project; the source audio is never modified.
+When a project has audio but no video (for example, a new project with an MP3 added through **Add Media**), the audio becomes the timeline: its length follows the end of the last audio clip, the first audio imports at 100% volume, and Play, Space, and seeking play it. **Generate Subtitles** asks only for the audio language (**French / English / Chinese**) and transcribes the audio as placed on the timeline with local Whisper; no translation is performed. The result appears as an ordinary subtitle row, so words can be checked while listening and corrected, retimed, added, or deleted with the usual tools and undo. The lyrics are saved in the `.frzh` project.
+
+**Export** then writes an `.lrc` file (offered next to the audio); if several subtitle languages contain cues, the save dialog asks which one. Times are relative to the start of the first audio clip. Each cue becomes one `[mm:ss.xx]` line, with an empty timestamp where a pause follows. Trimming the audio shortens the timeline and trims or removes cues past its end. Adding a video turns the project back into a video project whose length follows the video. The source audio is never modified.
 
 If an older version shortened imported music to the remaining video duration, import it again or extend its right edge to restore more of the source. Existing manual trims are not automatically changed.
 
