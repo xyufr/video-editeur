@@ -42,7 +42,12 @@ public enum LyricAligner {
         return Double(previous[y.count]) <= Double(max(x.count,y.count))*0.34
     }
 
-    /// Returns one cue per lyric line, in order, non-overlapping and within `[lower, upper)`.
+    /// Shortest time an unmatched line may get; a run of unmatched lines squeezed below this between its
+    /// timed neighbours is not sung there (for example page text copied with the lyrics) and is left out.
+    public static let minimumUnmatchedLine: Int64 = 700
+    static let minimumLine: Int64 = 200
+
+    /// Returns one cue per placed lyric line, in order, non-overlapping and within `[lower, upper)`.
     public static func align(lines: [String], transcription: [Cue], language: Language, lower: Int64 = 0, upper: Int64) -> [Cue] {
         guard upper>lower,!lines.isEmpty else { return [] }
         // Transcribed words with interpolated times.
@@ -103,6 +108,7 @@ public enum LyricAligner {
             guard starts[index] == nil else { index+=1; continue }
             var stop=index; while stop<lines.count && starts[stop] == nil { stop+=1 }
             let from=index>0 ? ends[index-1]! : lower, to=stop<lines.count ? starts[stop]! : upper
+            guard (to-from)/Int64(stop-index) >= minimumUnmatchedLine else { index=stop; continue }
             let weights=(index..<stop).map { Int64(max(1,lines[$0].count)) }, total=weights.reduce(0,+)
             var cursor=from, acc: Int64=0
             for (k,line) in (index..<stop).enumerated() {
@@ -114,8 +120,10 @@ public enum LyricAligner {
         }
         var cues: [Cue]=[], previous=lower
         for (index,text) in lines.enumerated() {
-            let start=max(starts[index]!,previous), end=min(max(ends[index]!,start+1),upper)
-            guard start<end else { continue }
+            guard let s=starts[index],let e=ends[index] else { continue }
+            let start=max(s,previous), end=min(max(e,start+1),upper)
+            // A line pushed to a sliver by its predecessor would be invisible on the timeline.
+            guard end-start >= minimumLine else { continue }
             cues.append(Cue(language:language,start:start,end:end,text:text)); previous=end
         }
         return cues

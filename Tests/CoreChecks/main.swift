@@ -56,6 +56,11 @@ check("Chinese lyrics align per character and unmatched tail fills to the end") 
     var p=Project(); p.duration=5000; p.cues=placed; try p.validate()
     return placed.map(\.start) == [1000,3000] && placed.map(\.end) == [3000,5000]
 }
+check("Unmatched lyric lines without room are left out") {
+    let heard=[Cue(language:.en,start:90_000,end:97_750,text:"now I'm saving all my loving for someone who's loving me"),Cue(language:.en,start:97_900,end:101_000,text:"go now go walk out the door")]
+    let placed=LyricAligner.align(lines:["Now I'm saving all my loving for someone who's loving me","You might also like","9 to 5","Dolly Parton","Go now go, walk out the door"],transcription:heard,language:.en,upper:120_000)
+    return placed.map(\.text) == ["Now I'm saving all my loving for someone who's loving me","Go now go, walk out the door"]
+}
 check("Lyrics without transcription spread over the range") {
     let placed=LyricAligner.align(lines:["aa","bb"],transcription:[],language:.en,lower:1000,upper:3000)
     return placed.map(\.start) == [1000,2000] && placed.last?.end == 3000
