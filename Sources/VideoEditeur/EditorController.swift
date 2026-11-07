@@ -975,6 +975,8 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
     struct GenerationOptions {
         var languages: GenerationLanguages
         var filesOnly: Bool
+        /// Lines of a lyrics text file to place on the timeline using the transcription times.
+        var lyrics: [String]? = nil
     }
     func chooseGenerationLanguages() -> GenerationOptions? {
         let alert=NSAlert(); alert.messageText=L("生成字幕")
@@ -1027,10 +1029,12 @@ final class EditorController: NSViewController, NSTableViewDataSource, NSTableVi
         DispatchQueue.global(qos:.userInitiated).async { [weak self] in
             do {
                 let transcriptionInput=try self?.prepareTranscriptionInput(project:original,job:job) ?? URL(fileURLWithPath:original.videoPath)
-                let result=try job.run(video:transcriptionInput,duration:original.duration,status:{ message in DispatchQueue.main.async { self?.statusLabel.stringValue=message } },partial:{ cues in DispatchQueue.main.async { guard let self, self.generation === job else { return }; self.project=generationProject; self.project.cues=cues+original.cues.filter{$0.trackID != nil}; self.selected=nil; self.refresh(); self.scheduleSave() } })
+                let transcribed=try job.run(video:transcriptionInput,duration:original.duration,status:{ message in DispatchQueue.main.async { self?.statusLabel.stringValue=message } },partial:{ cues in DispatchQueue.main.async { guard let self, self.generation === job else { return }; self.project=generationProject; self.project.cues=cues+original.cues.filter{$0.trackID != nil}; self.selected=nil; self.refresh(); self.scheduleSave() } })
+                let result=options.lyrics.map { LyricAligner.align(lines:$0,transcription:transcribed,language:languages.source,lower:original.music.map(\.start).min() ?? 0,upper:original.duration) } ?? transcribed
+                if options.lyrics != nil,result.isEmpty { throw SubtitleError.invalid(L("歌词文本无法放到时间轴")) }
                 DispatchQueue.main.async {
                     guard let self, self.generation === job else { return }; self.project=original; var next=generationProject; next.cues=result+original.cues.filter{$0.trackID != nil}; self.commit(next,name:L("生成字幕"))
-                    self.generation=nil; self.retryDirectory=nil; UserDefaults.standard.removeObject(forKey:"pendingJob"); self.generateButton.title=L("生成字幕"); self.setBusy(false); self.statusLabel.stringValue=L("字幕已生成 · {0} 条", [String(result.count)])+(job.skippedTranslations>0 ? " · "+L("{0} 条未返回译文，已跳过", [String(job.skippedTranslations)]) : ""); self.persistNow()
+                    self.generation=nil; self.retryDirectory=nil; UserDefaults.standard.removeObject(forKey:"pendingJob"); self.generateButton.title=L("生成字幕"); self.setBusy(false); self.statusLabel.stringValue=(options.lyrics.map { L("已按歌词文本放置 {0} / {1} 行", [String(result.count), String($0.count)]) } ?? L("字幕已生成 · {0} 条", [String(result.count)]))+(job.skippedTranslations>0 ? " · "+L("{0} 条未返回译文，已跳过", [String(job.skippedTranslations)]) : ""); self.persistNow()
                     if let first=result.first { self.select(first.id) }
                 }
             } catch {

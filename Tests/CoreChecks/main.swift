@@ -42,6 +42,24 @@ check("Audio-only timeline length follows audio and keeps lyrics valid") {
     var video=Project(); video.duration=4000; video.videoPath="v.mp4"
     return cut.duration == 0 && cut.cues.isEmpty && video.syncingAudioOnlyDuration() == video
 }
+check("Lyric text lines drop blanks and LRC tags") { LyricAligner.lines(fromText:"\u{FEFF}[ti:x]\n[00:01.00]Bonjour  \n\n  Ça va\r\n") == ["Bonjour","Ça va"] }
+check("Lyric lines follow transcription times despite recognition errors") {
+    let heard=[Cue(language:.fr,start:10_000,end:14_000,text:"Même si c'est tentant de fuir"),Cue(language:.fr,start:20_000,end:22_000,text:"s'il te plait"),Cue(language:.fr,start:30_000,end:33_000,text:"ouvre les yeux")]
+    let placed=LyricAligner.align(lines:["Même si c'est tentant","De fuir","Un vers jamais chanté","S'il te plaît,","Ouvre les yeux"],transcription:heard,language:.fr,lower:0,upper:40_000)
+    guard placed.count == 5,placed.map(\.text)[3] == "S'il te plaît," else { return false }
+    let sorted=zip(placed,placed.dropFirst()).allSatisfy { $0.end <= $1.start }
+    return sorted && placed[0].start == 10_000 && placed[1].end == 14_000 && placed[2].start == 14_000 && placed[2].end == 20_000
+        && placed[3].start == 20_000 && placed[3].end == 22_000 && placed[4].start == 30_000 && placed[4].end == 33_000
+}
+check("Chinese lyrics align per character and unmatched tail fills to the end") {
+    let placed=LyricAligner.align(lines:["你好世界","再见"],transcription:[Cue(language:.zh,start:1000,end:3000,text:"你好，世界")],language:.zh,upper:5000)
+    var p=Project(); p.duration=5000; p.cues=placed; try p.validate()
+    return placed.map(\.start) == [1000,3000] && placed.map(\.end) == [3000,5000]
+}
+check("Lyrics without transcription spread over the range") {
+    let placed=LyricAligner.align(lines:["aa","bb"],transcription:[],language:.en,lower:1000,upper:3000)
+    return placed.map(\.start) == [1000,2000] && placed.last?.end == 3000
+}
 check("LRC follows trimmed audio range") {
     let c=LRC.clipped([Cue(language:.en,start:500,end:1500,text:"a"),Cue(language:.en,start:2000,end:3000,text:"b"),Cue(language:.en,start:5000,end:6000,text:"c")],start:1000,end:5000)
     return c.map(\.start) == [0,1000] && c.map(\.end) == [500,2000]
