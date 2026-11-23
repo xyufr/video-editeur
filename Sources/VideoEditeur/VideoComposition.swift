@@ -115,6 +115,9 @@ struct EditedAsset {
             try holdFrame(sourceStart:range.start,at:destination,duration:leading)
             try target.insertTimeRange(range,of:v,at:CMTimeAdd(destination,leading))
             try holdFrame(sourceStart:CMTimeSubtract(CMTimeRangeGetEnd(range),sampleDuration),at:CMTimeAdd(CMTimeAdd(destination,leading),range.duration),duration:trailing)
+            // A split cell that ends before the project keeps showing its last frame (see `visibleEnd`).
+            let held=project.visibleEnd(of:p)-p.end
+            if held>0 { try holdFrame(sourceStart:CMTimeSubtract(CMTimeRangeGetEnd(range),sampleDuration),at:CMTime(value:p.end,timescale:1000),duration:CMTime(value:held,timescale:1000)) }
             let isLayer=project.layers.contains{$0.id == p.clip.id}
             let outgoing = !isLayer && i+1<project.placements.count ? places[i+1].clip.transition : 0
             layers.append(RenderLayer(trackID:target.trackID,transform:v.preferredTransform,placement:p,outgoing:outgoing))
@@ -149,9 +152,9 @@ struct EditedAsset {
         video.customVideoCompositorClass=EditCompositor.self
         video.renderSize=size; video.frameDuration=frameDuration
         video.colorPrimaries=color.primaries; video.colorTransferFunction=color.transfer; video.colorYCbCrMatrix=color.matrix
-        let boundaries=Set(places.flatMap{[$0.start,$0.end]}+[0,project.duration]).sorted()
+        let boundaries=Set(places.flatMap{[$0.start,$0.end,project.visibleEnd(of:$0)]}+[0,project.duration]).sorted()
         video.instructions=zip(boundaries,boundaries.dropFirst()).map { a,b in
-            EditInstruction(start:a,end:b,layers:layers.filter{$0.placement.start<=a && $0.placement.end>a},project:project,color:color,subtitles:subtitles,speed:speed)
+            EditInstruction(start:a,end:b,layers:layers.filter{$0.placement.start<=a && project.visibleEnd(of:$0.placement)>a},project:project,color:color,subtitles:subtitles,speed:speed)
         }
     }
     /// Output frame rate: the highest nominal source rate, snapped to a standard rate and capped at 60.
@@ -207,7 +210,7 @@ final class EditCompositor: NSObject, AVVideoCompositing {
                 if e.brightness != 0 || e.contrast != 1 || e.saturation != 1 {
                     frame=frame.applyingFilter("CIColorControls",parameters:[kCIInputBrightnessKey:e.brightness,kCIInputContrastKey:e.contrast,kCIInputSaturationKey:e.saturation])
                 }
-                let sourceTime=layer.placement.clip.sourceStart+elapsed
+                let sourceTime=min(layer.placement.clip.sourceStart+elapsed,layer.placement.clip.sourceEnd-1)
                 frame=VideoRegionRenderer.apply(to:frame,clip:layer.placement.clip,sourceTime:sourceTime,size:size)
                 // Only the incoming image fades in for a dissolve; the outgoing image remains opaque underneath.
                 var alpha=1.0

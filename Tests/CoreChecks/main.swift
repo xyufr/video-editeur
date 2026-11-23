@@ -514,6 +514,16 @@ check("Auto canvas fits each video whole: column heights and row widths follow t
     let restored=try JSONDecoder().decode(Project.self,from:JSONEncoder().encode(p))
     return rejects({ try bad.validate() }) && restored == p
 }
+check("A shorter split cell holds its last frame until the project ends") {
+    let p=try Project().addingSplitScreen([VideoClip(path:"short.mp4",duration:2000),VideoClip(path:"long.mp4",duration:6000)],layout:.column,canvas:.portrait,at:0)
+    let short=p.renderPlacements.first { $0.clip.duration == 2000 }!,long=p.renderPlacements.first { $0.clip.duration == 6000 }!
+    guard p.duration == 6000,p.visibleEnd(of:short) == 6000,p.visibleEnd(of:long) == 6000,p.splitDividers(at:4000).count == 1 else { return false }
+    // An earlier piece of a cut track ends at its own end; only the track's last piece holds.
+    let cut=try p.cuttingLayer(p.layers.first { $0.clip.duration == 6000 }?.id ?? p.clips[0].id,at:3000)
+    let pieces=cut.renderPlacements.filter { $0.clip.path == "long.mp4" }.sorted { $0.start<$1.start }
+    let plain=try Project().replacingClips([VideoClip(path:"a",duration:1000)])
+    return pieces.count == 2 && cut.visibleEnd(of:pieces[0]) == 3000 && cut.visibleEnd(of:pieces[1]) == 6000 && plain.visibleEnd(of:plain.placements[0]) == 1000
+}
 check("Split dividers move the shared edge, keep minimum sizes and follow cut pieces") {
     let videos=(0..<2).map { _ in VideoClip(path:"v.mp4",duration:4000) }
     var p=try Project().addingSplitScreen(videos,layout:.column,canvas:.portrait,at:0)

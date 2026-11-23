@@ -140,10 +140,18 @@ public struct SplitDivider: Equatable {
 }
 
 extension Project {
+    /// End of the time a placement stays on screen. A split-screen cell that is the last clip on its track
+    /// holds its final frame until the project ends, so a shorter video does not leave its cell black.
+    public func visibleEnd(of p: ClipPlacement) -> Int64 {
+        guard p.clip.frame != nil else { return p.end }
+        let track=layers.first { $0.id == p.clip.id }?.trackIdentifier
+        let siblings: [(UUID,Int64)]=track.map { id in layers.filter { $0.trackIdentifier == id }.map { ($0.id,$0.start) } } ?? placements.map { ($0.clip.id,$0.start) }
+        return siblings.contains { $0.0 != p.clip.id && $0.1>=p.end } ? p.end : max(p.end,duration)
+    }
     /// Clips with a split-screen cell that are visible at `time`, with their cells.
     private func framedClips(at time: Int64) -> [(UUID,VideoFrame)] {
         renderPlacements.compactMap { p in
-            guard let frame=p.clip.frame,p.start<=time,time<p.end else { return nil }
+            guard let frame=p.clip.frame,p.start<=time,time<visibleEnd(of:p) else { return nil }
             let hidden=layers.first { $0.id == p.clip.id }?.hidden ?? isVideoHidden
             return hidden ? nil : (p.clip.id,frame)
         }
